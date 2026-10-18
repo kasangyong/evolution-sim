@@ -1,0 +1,19 @@
+[project]
+name = "evo"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "taichi==1.7.4",
+    "numpy<2",
+    "dearpygui>=2.0",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
