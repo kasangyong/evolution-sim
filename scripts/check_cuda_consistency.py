@@ -29,6 +29,8 @@ for _ in range(6):
         "dead bodies empty": (a.body.to_numpy()[state == DEAD] == 0).all(),
         "chem >= -1e-15": sim.world.chem.to_numpy().min() >= -1e-15,
         "budget < 1e-9": sim.budget_error().worst() < 1e-9,
+        "all finite": (np.isfinite(a.body.to_numpy()).all() and np.isfinite(a.energy.to_numpy()).all()
+                       and np.isfinite(sim.world.chem.to_numpy()).all()),
     }
     print(f"tick {sim.tick} pop {a.count()} " + " ".join(f"{k}={v}" for k, v in checks.items()))
     if not all(checks.values()):

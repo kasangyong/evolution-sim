@@ -19,6 +19,10 @@ class WorldConfig:
     depth: int = 384
     seed: int = 1
     n_vents: int = 4
+    # vents on seamount summits inside the photic zone (shallow Archean hydrothermal systems)
+    n_shallow_vents: int = 1
+    seamount_depth_frac: float = 0.15  # summit floor depth as a fraction of ocean depth
+    seamount_width_frac: float = 0.012  # Gaussian half-width as a fraction of world width
     shelf_frac: float = 0.15  # fraction of width that is shallow shelf (left side)
     shelf_depth_frac: float = 0.12
     abyss_depth_frac: float = 0.9
@@ -75,18 +79,26 @@ class ClimateConfig:
     a_co2: float = 6.0
     p_min: float = 1.0e-3
     a_ch4: float = 4.0
-    solar: float = 0.75  # relative to present
+    solar: float = 0.75  # relative to present, at the start
+    # the Sun brightens ~7% per billion years; at 1 tick = 1,000 years that is 7e-8 per tick (stage 6)
+    solar_rate: float = 7.0e-8
+    solar_max: float = 1.0  # present-day Sun
     b_solar: float = 40.0
     c_ice: float = 15.0
     t_freeze: float = 0.0
     ice_width: float = 5.0
     tau: float = 50.0  # relaxation ticks
-    k_weather: float = 1.0e-5  # balances vent CO2 near pCO2 ≈ 1.4 with the faint young sun
+    k_weather: float = 2.0e-5  # doubled with volcanoes (stage 4a): balances vent + volcanic CO2
     k_weather_t: float = 0.07
     k_photo_m: float = 1.0e-4
     k_atm_mo: float = 1.0e-9
     k_h_escape: float = 1.0e-3
     weathering_on: bool = True
+    # Poisson eruptions straight into the atmosphere (stage 4a, design decision 5): the escape route
+    # from a snowball, since ice shuts both gas exchange and weathering
+    volcano_p: float = 0.01  # eruption chance per tick
+    volcano_mean_c: float = 80.0  # mean CO2 per eruption (exponential sizes); mean 0.8/tick = vents
+    volcano_h_frac: float = 0.05  # H2 released per unit CO2 (reducing volcanic gas)
 
 
 @dataclass
@@ -105,7 +117,12 @@ class LifeConfig:
     death_rate: float = 2.0e-4  # background mortality per tick
     min_body: float = 1.0e-4
     drift_sigma: float = 0.3  # random-walk step (cells)
-    big_mutation_p: float = 0.01  # chance that one gene is redrawn uniformly
+    big_mutation_p: float = 0.01  # chance that one trait (non-brain) gene is redrawn uniformly
+    k_light: float = 0.5  # light absorption per unit biomass in a cell (Beer–Lambert coefficient)
+    k_tox: float = 0.05  # O2 damage: extra upkeep per unit body per unit O2 at zero tolerance
+    k_pred: float = 0.05  # max bite per unit predator body per tick at η = 1
+    assimilation: float = 0.6  # bitten body kept by the predator; the rest becomes detritus
+    k_move: float = 0.01  # energy per unit body per (cell/tick)² of active movement
 
 
 @dataclass

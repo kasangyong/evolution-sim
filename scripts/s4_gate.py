@@ -1,12 +1,12 @@
 """Resumable S4 survival gate: replicates × seeds, one subprocess per run, appended to
-runs/s4_gate.log. Re-running skips (rep, seed) pairs already logged."""
+runs/<name>.log (argv[1], default s4_gate). Re-running skips (rep, seed) pairs already logged."""
 import subprocess
 import sys
 from pathlib import Path
 
 REPS, SEEDS = 2, range(1, 11)
 root = Path(__file__).resolve().parents[1]
-log = root / "runs" / "s4_gate.log"
+log = root / "runs" / f"{sys.argv[1] if len(sys.argv) > 1 else 's4_gate'}.log"
 log.parent.mkdir(exist_ok=True)
 done = log.read_text(encoding="utf-8") if log.exists() else ""
 for rep in range(1, REPS + 1):

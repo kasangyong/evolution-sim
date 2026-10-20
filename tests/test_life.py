@@ -100,3 +100,37 @@ def test_cuda_concurrency_consistency():
                          cwd=root, env={**os.environ, "PYTHONPATH": str(root)},
                          capture_output=True, text=True, timeout=600, check=False)
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+
+
+def test_full_pool_turns_slots_into_super_individuals(small_cfg):
+    # with too few slots, division continues inside slots instead of failing (stage 3a, decision 7)
+    from evo.life.genome import DIV_SIZE
+
+    small_cfg.life.capacity = 512
+    sim = Sim(small_cfg)
+    sim.step(3000)
+    a = sim.life
+    snap = a.snapshot()
+    assert a.count() >= 0.95 * a.cap  # slots freed by deaths refill next tick
+    assert snap["ncell"].max() > 1 and a.cells() > a.cap
+    per_cell = snap["body"] / snap["ncell"]
+    # growth stops at 2 × division size; a cell short of division energy can overshoot by one
+    # tick of growth (measured max 2.21×)
+    assert (per_cell < 2.5 * snap["genome"][:, DIV_SIZE]).all()
+    assert sim.budget_error().worst() < 1e-9
+
+
+def test_bottom_row_cells_stay_attached(small_cfg):
+    # benthic mats: a cell in the water row just above the floor does not drift (decision 7)
+    sim = Sim(small_cfg)
+    a, w = sim.life, sim.world
+    x = 100
+    y = int(w.floor_np[x]) - 1
+    state = np.zeros(a.cap, np.int32)
+    state[:2] = ALIVE
+    a.state.from_numpy(state)
+    a.pos[0] = [x + 0.5, y + 0.5]
+    a.pos[1] = [x + 0.5, y - 10 + 0.5]
+    a.move()
+    assert tuple(a.pos[0]) == (x + 0.5, y + 0.5)
+    assert tuple(a.pos[1]) != (x + 0.5, y - 10 + 0.5)

@@ -22,6 +22,11 @@ def main():
     ap.add_argument("--arch", choices=["cuda", "cpu"], default="cuda")
     ap.add_argument("--headless", type=int, default=0, help="run N ticks without UI and report")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--web", type=int, default=0, metavar="PORT",
+                    help="serve a live browser viewer on PORT instead of the desktop window")
+    ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to allow other devices on the LAN")
+    ap.add_argument("--history", default="", help="time-machine folder (default runs/history/<time>-seed<N>)")
+    ap.add_argument("--budget-gb", type=float, default=20.0, help="disk budget for the time machine")
     args = ap.parse_args()
 
     if args.arch == "cuda":
@@ -42,6 +47,13 @@ def main():
 
     if args.headless:
         headless(sim, args.headless)
+    elif args.web:
+        from pathlib import Path
+
+        from evo.ui.web import serve
+
+        root = Path(args.history or f"runs/history/{time.strftime('%Y%m%d-%H%M%S')}-seed{args.seed}")
+        serve(sim, name, args.host, args.web, root, args.budget_gb)
     else:
         from evo.ui.app import run
 

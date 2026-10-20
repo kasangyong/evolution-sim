@@ -12,6 +12,7 @@ from evo.world.fields import (
     SINK_C,
     SINK_E,
     SRC_C,
+    SRC_E,
     World,
 )
 
@@ -60,6 +61,8 @@ class Climate:
 
     @ti.kernel
     def step(self):
+        self.world.clim[CL_SOLAR] = ti.min(self.world.clim[CL_SOLAR] + CHEM_DTYPE(self.cfg.solar_rate),
+                                           CHEM_DTYPE(self.cfg.solar_max))
         ts, ice = self.world.clim[CL_TS], self.world.clim[CL_ICE]
         ac, am = self.world.atm[ATM_C], self.world.atm[ATM_M]
         pc = ti.max(ac / self.cfg.c_ref, self.cfg.p_min)
@@ -89,6 +92,14 @@ class Climate:
         self.world.atm[ATM_M] -= mo
         self.world.atm[ATM_O] -= 2.0 * mo
         self.world.atm[ATM_C] += mo
+
+        if ti.random(ti.f64) < self.cfg.volcano_p:
+            size = -self.cfg.volcano_mean_c * ti.log(1.0 - ti.random(ti.f64))
+            h2 = self.cfg.volcano_h_frac * size
+            self.world.atm[ATM_C] += size
+            self.world.atm[ATM_H] += h2
+            self.world.acc[SRC_C] += size
+            self.world.acc[SRC_E] += 2.0 * h2
 
         he = self.cfg.k_h_escape * self.world.atm[ATM_H]
         self.world.atm[ATM_H] -= he

@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evolution Sim Live</title>
+<style>
+  :root {
+    --bg: #070d12; --panel: #0f1a22; --line: #1f3140; --text: #d6e3ea; --muted: #7f95a3;
+    --accent: #5fb8cf; --o2: #6fd08c; --ch4: #e0a24f; --co2: #9aa7ff; --pop: #5fb8cf;
+    --photic: #b6e36a; --temp: #ef7d6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  main { max-width: 1400px; margin: 0 auto; padding: 12px 16px 24px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; margin-bottom: 8px; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .clock { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .clock b { color: var(--text); font-weight: 600; }
+  .stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 6px;
+           overflow: hidden; touch-action: none; }
+  #view { display: block; width: 100%; aspect-ratio: 1024 / 499; cursor: grab; }
+  #view.drag { cursor: grabbing; }
+  .hud { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: #cfe3ec;
+         background: rgba(5, 12, 18, .65); padding: 4px 8px; border-radius: 4px; pointer-events: none; }
+  #tip { position: absolute; pointer-events: none; background: rgba(5, 12, 18, .9); color: #e6f0f4;
+         border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; font-size: 12px;
+         line-height: 1.5; white-space: nowrap; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 14px; }
+  button, select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                   border-radius: 5px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 5px;
+              vertical-align: -1px; border: 1px solid rgba(255,255,255,.25); }
+  .legend .bar { width: 12px; height: 3px; border-radius: 0; border: 0; vertical-align: middle; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; min-width: 0; }
+  .card h2 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-variant-numeric: tabular-nums; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  canvas.chart { width: 100%; height: 140px; display: block; }
+  .card.wide { grid-column: 1 / -1; }
+  #tree { width: 100%; height: 260px; display: block; cursor: pointer; }
+  #spinfo { font-size: 13px; color: var(--muted); margin-top: 6px; min-height: 1.5em; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  .timeline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .timeline input[type=range] { flex: 1 1 320px; min-width: 0; accent-color: var(--accent); }
+  #tlabel { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; min-width: 0; }
+  .stage.replay { border-color: #c9a24f; }
+  .badge { position: absolute; right: 10px; top: 8px; font-size: 12px; padding: 3px 8px; border-radius: 4px;
+           background: rgba(201,162,79,.9); color: #1b1305; font-weight: 600; }
+  .offline { color: var(--temp); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>진화 시뮬레이션</h1>
+    <div class="clock">생물 시간 <b id="tick">-</b> tick · 지질 환산 약 <b id="myr">-</b>백만 년 · <b id="tps">-</b> tick/s</div>
+    <div class="clock" id="status"></div>
+  </header>
+
+  <div class="stage">
+    <canvas id="view" aria-label="바다 단면. 휠로 확대, 끌어서 이동"></canvas>
+    <div class="hud" id="hud"></div>
+    <div id="tip" hidden></div>
+    <div class="badge" id="badge" hidden>되감기</div>
+  </div>
+
+  <div class="timeline">
+    <button id="live" class="on">실시간</button>
+    <button id="play">재생</button>
+    <input type="range" id="scrub" min="0" max="0" step="100" value="0" aria-label="시간 되감기">
+    <button id="fork" disabled>여기서 다시 실행</button>
+  </div>
+  <div class="note" id="tlabel"></div>
+
+  <div class="controls">
+    <button id="pause">일시정지</button>
+    <label>배속
+      <select id="speed">
+        <option value="1">관찰 (1 tick/프레임)</option>
+        <option value="3">느리게 (3)</option>
+        <option value="20">보통 (20)</option>
+        <option value="0" selected>최대</option>
+      </select>
+    </label>
+    <label>보기 <select id="layer"></select></label>
+    <button id="reset">바다 전체</button>
+    <div class="legend">
+      <span><i style="background:#38a043"></i>산소 광합성 (엽록소)</span>
+      <span><i style="background:#8c4d6b"></i>비산소 광합성 (세균엽록소)</span>
+      <span><i style="background:#ccd1c7"></i>화학합성</span>
+      <span><i style="background:#c79966"></i>포식</span>
+      <span><i style="background:transparent;border:2px solid #ffecaa"></i>방금 먹음</span>
+      <span><i style="background:transparent;border:2px solid #eb503c"></i>방금 먹힘</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>생물</h2><div class="kv" id="lifekv"></div></div>
+    <div class="card"><h2>대기 · 기후</h2><div class="kv" id="climkv"></div></div>
+    <div class="card">
+      <h2>세포 수</h2><canvas class="chart" id="c_pop"></canvas>
+      <div class="legend"><span><i class="bar" style="background:var(--pop)"></i>슬롯</span><span><i class="bar" style="background:var(--photic)"></i>빛 받는 슬롯</span></div>
+    </div>
+    <div class="card">
+      <h2>대기 기체 (로그 눈금)</h2><canvas class="chart" id="c_gas"></canvas>
+      <div class="legend"><span><i class="bar" style="background:var(--o2)"></i>O₂</span><span><i class="bar" style="background:var(--ch4)"></i>CH₄</span><span><i class="bar" style="background:var(--co2)"></i>CO₂</span></div>
+    </div>
+    <div class="card">
+      <h2>수면 온도 (°C)</h2><canvas class="chart" id="c_temp"></canvas>
+    </div>
+    <div class="card wide">
+      <h2>계통수 · 종이 생기고 갈라지고 사라진 역사 (막대 굵기 = 세포 수, 선 = 갈라져 나온 곳). 종을 누르면 확대 화면에서 강조합니다</h2>
+      <canvas id="tree" aria-label="계통수"></canvas>
+      <div id="spinfo"></div>
+    </div>
+  </div>
+
+  <p class="note">시작 후 개입 없음. 배속과 보기만 바꿀 수 있습니다. 색은 모두 시뮬레이션 값에서 나옵니다: 물빛 = 빛 감쇠, 주황 = 열수구 열, 흰 띠 = 해빙, 세포 색 = 대사 방식.
+    지질 환산은 1 tick = 1,000년 압축이며 실제 지구 시간이 아닙니다. 세로는 가로보다 1.3배 늘려 그렸습니다.</p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 3) => (v === undefined || v === null || Number.isNaN(v)) ? "-" :
+  (Math.abs(v) >= 1e5 || (Math.abs(v) < 1e-2 && v !== 0)) ? v.toExponential(2) : v.toLocaleString(undefined, {maximumFractionDigits: d});
+const KIND = ["화학합성", "비산소 광합성", "산소 광합성", "포식"];
+const VEX = 1.3;                       // vertical exaggeration
+const MAX_AREA = 400 * 160;            // must match web.py MAX_VIEW_AREA
+let st = null, layersFilled = false, worldW = 1024, worldH = 384;
+let frameBmp = null;
+let cam = {x: 0, y: 0, w: 1024};       // world rect: left, top, width (height follows canvas)
+let snaps = [];                        // last two cell snapshots {t, tick, map: uid -> row}
+let hover = null;
+let mode = "live", replayT = 0, playing = false, hindex = null;
+let tree = [], selected = null, treeLanes = [];
+const geo = t => (t * 1000 / 1e6).toLocaleString(undefined, {maximumFractionDigits: 1});
+
+function post(cmd) {
+  fetch("/cmd", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cmd)});
+}
+$("pause").onclick = () => st && post({paused: !st.paused});
+$("speed").onchange = e => post({speed: +e.target.value});
+$("layer").onchange = e => post({layer: +e.target.value});
+$("reset").onclick = () => { cam = {x: 0, y: 0, w: worldW}; sendView(); };
+
+// ---- time machine ----
+function setMode(m) {
+  mode = m; snaps = [];
+  $("live").classList.toggle("on", m === "live");
+  document.querySelector(".stage").classList.toggle("replay", m === "replay");
+  $("badge").hidden = m !== "replay";
+  $("fork").disabled = m !== "replay";
+  if (m === "live") playing = false;
+  $("play").textContent = playing ? "멈춤" : "재생";
+}
+function nearestFrame(t) {
+  if (!hindex || !hindex.frames.length) return 0;
+  let best = hindex.frames[0];
+  for (const f of hindex.frames) { if (f <= t) best = f; else break; }
+  return best;
+}
+function nearestSnap(t) {
+  if (!hindex) return null;
+  let best = null;
+  for (const f of hindex.snaps) if (f <= t) best = f;
+  return best;
+}
+$("scrub").addEventListener("input", e => { replayT = nearestFrame(+e.target.value); setMode("replay"); });
+$("live").onclick = () => setMode("live");
+$("play").onclick = () => {
+  if (mode === "live") { replayT = hindex && hindex.frames.length ? hindex.frames[0] : 0; setMode("replay"); }
+  playing = !playing; $("play").textContent = playing ? "멈춤" : "재생";
+};
+$("fork").onclick = () => { post({branch_from: replayT}); setMode("live"); };
+setInterval(() => {
+  if (!playing || mode !== "replay" || !hindex) return;
+  const next = hindex.frames.find(f => f > replayT);
+  if (next === undefined) { playing = false; $("play").textContent = "재생"; } else replayT = next;
+}, 150);
+async function pollIndex() {
+  try {
+    hindex = await (await fetch("/history/index.json", {cache: "no-store"})).json();
+    const last = hindex.frames.length ? hindex.frames[hindex.frames.length - 1] : 0;
+    $("scrub").max = last;
+    if (mode === "live") $("scrub").value = last; else $("scrub").value = replayT;
+    const br = hindex.branches[hindex.current];
+    const where = br.parent === null ? "원래 역사" : `갈래 ${br.id} (갈래 ${br.parent}의 tick ${br.fork_tick.toLocaleString()}에서 다시 실행)`;
+    const gb = v => (v / 1024 ** 3).toFixed(2);
+    const s = nearestSnap(replayT);
+    $("tlabel").textContent = (mode === "replay"
+      ? `되감기: tick ${replayT.toLocaleString()} (지질 약 ${geo(replayT)}백만 년) · '여기서 다시 실행'은 가장 가까운 저장점 tick ${s === null ? "-" : s.toLocaleString()}에서 새 갈래로 시작하며, GPU 특성상 원래와 다른 역사가 됩니다`
+      : `실시간 · 기록 ${hindex.frames.length.toLocaleString()}개`) + ` · ${where} · 디스크 ${gb(hindex.used)}/${gb(hindex.budget)} GB` +
+      (st && (st.rec_dropped || st.rec_errors) ? ` · 건너뛴 기록 ${st.rec_dropped}개, 쓰기 실패 ${st.rec_errors}개` : "") +
+      (st && st.notice ? ` · ${st.notice}` : "");
+  } catch (e) { /* offline */ }
+  setTimeout(pollIndex, 1500);
+}
+
+// ---- camera ----
+const cv = $("view"), ctx = cv.getContext("2d");
+function camH() { return cam.w * cv.clientHeight / cv.clientWidth / VEX; }
+function clampCam() {
+  cam.w = Math.min(Math.max(cam.w, 12), worldW);
+  cam.x = Math.min(Math.max(cam.x, 0), worldW - cam.w);
+  cam.y = Math.min(Math.max(cam.y, 0), Math.max(worldH - camH(), 0));
+}
+function toWorld(px, py) { return [cam.x + px / cv.clientWidth * cam.w, cam.y + py / cv.clientHeight * camH()]; }
+let viewTimer = null;
+function sendView() {
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => {
+    const h = camH();
+    post({view: cam.w * h <= MAX_AREA ? [cam.x - 2, cam.y - 2, cam.x + cam.w + 2, cam.y + h + 2] : null});
+    if (cam.w * h > MAX_AREA) snaps = [];
+  }, 120);
+}
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect(), [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
+  const f = Math.exp(e.deltaY * 0.0015);
+  const nw = Math.min(Math.max(cam.w * f, 12), worldW);
+  cam.x = wx - (wx - cam.x) * nw / cam.w; cam.y = wy - (wy - cam.y) * nw / cam.w; cam.w = nw;
+  clampCam(); sendView();
+}, {passive: false});
+let drag = null;
+cv.addEventListener("pointerdown", e => { drag = {x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y}; cv.classList.add("drag"); cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointerup", () => { drag = null; cv.classList.remove("drag"); });
+cv.addEventListener("pointermove", e => {
+  const r = cv.getBoundingClientRect();
+  if (drag) {
+    cam.x = drag.cx - (e.clientX - drag.x) / cv.clientWidth * cam.w;
+    cam.y = drag.cy - (e.clientY - drag.y) / cv.clientHeight * camH();
+    clampCam(); sendView(); return;
+  }
+  hover = {px: e.clientX - r.left, py: e.clientY - r.top};
+});
+cv.addEventListener("pointerleave", () => { hover = null; $("tip").hidden = true; });
+cv.addEventListener("dblclick", e => {
+  const r = cv.getBoundingClientRect(), [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
+  cam.w = Math.max(cam.w / 3, 12); cam.x = wx - cam.w / 2; cam.y = wy - camH() / 2; clampCam(); sendView();
+});
+
+// ---- data ----
+async function pollStats() {
+  try {
+    st = await (await fetch("/stats.json", {cache: "no-store"})).json();
+    if (st.world) { worldW = st.world[0]; worldH = st.world[1]; }
+    if (!layersFilled && st.layers) {
+      const names = {Light: "빛", Temperature: "온도", Natural: "자연색 (기본)"};
+      $("layer").innerHTML = st.layers.map((n, i) => `<option value="${i}">${names[n] || n}</option>`).join("");
+      layersFilled = true;
+    }
+    $("layer").value = st.layer;
+    const shown = mode === "replay" ? replayT : st.tick;
+    $("tick").textContent = shown.toLocaleString();
+    $("myr").textContent = geo(shown);
+    $("tps").textContent = Math.round(st.tps).toLocaleString();
+    $("status").textContent = (st.paused ? "일시정지" : "실행 중") + " · " + st.gpu;
+    $("status").classList.remove("offline");
+    $("pause").textContent = st.paused ? "계속" : "일시정지";
+    const L = st.life;
+    kv($("lifekv"), [
+      ["세포 수", fmt(L.cells, 0)], ["슬롯(묶음)", fmt(L.pop, 0)], ["빛 받는 슬롯", fmt(L.photic, 0)],
+      ["바이오매스", fmt(L.biomass)], ["η 수소 화학합성", fmt(L.eta_h2)], ["η 비산소 광합성", fmt(L.eta_photo_an)],
+      ["η 산소 광합성", fmt(L.eta_photo_ox)], ["η 포식", fmt(L.eta_pred)], ["헤엄 속도", fmt(L.speed)],
+    ]);
+    kv($("climkv"), [
+      ["수면 온도", fmt(st.ts, 1) + " °C"], ["결빙", Math.round(st.ice * 100) + " %"],
+      ["대기 O₂", fmt(st.atm.o2)], ["대기 CH₄", fmt(st.atm.ch4)], ["대기 CO₂", fmt(st.atm.co2)],
+      ["원소 수지 오차", st.err.toExponential(1)],
+    ]);
+    chart($("c_pop"), st.history, [{key: "pop", color: "--pop"}, {key: "photic", color: "--photic"}], false);
+    chart($("c_gas"), st.history, [{key: "o2", color: "--o2"}, {key: "ch4", color: "--ch4"}, {key: "co2", color: "--co2"}], true);
+    chart($("c_temp"), st.history, [{key: "ts", color: "--temp"}], false);
+  } catch (e) {
+    $("status").textContent = "연결 끊김 — 시뮬레이션 프로세스가 꺼져 있습니다";
+    $("status").classList.add("offline");
+  }
+  setTimeout(pollStats, 700);
+}
+async function pollFrame() {
+  try {
+    const url = mode === "replay" ? `/history/frame.png?t=${replayT}` : "/frame.png";
+    const blob = await (await fetch(url, {cache: "no-store"})).blob();
+    frameBmp = await createImageBitmap(blob);
+  } catch (e) { /* offline: keep last frame */ }
+  setTimeout(pollFrame, 250);
+}
+async function pollCells() {
+  if (cam.w * camH() <= MAX_AREA) {
+    try {
+      const h = camH(), v = [cam.x - 2, cam.y - 2, cam.x + cam.w + 2, cam.y + h + 2].map(n => n.toFixed(1)).join(",");
+      const url = mode === "replay" ? `/history/cells.bin?t=${replayT}&v=${v}` : "/cells.bin";
+      const buf = await (await fetch(url, {cache: "no-store"})).arrayBuffer();
+      if (buf.byteLength >= 16) {
+        const dv = new DataView(buf), tick = Number(dv.getBigInt64(0, true));
+        const total = dv.getInt32(8, true), n = dv.getInt32(12, true);
+        const NF = 15, f = new Float32Array(buf, 16, n * NF), map = new Map();
+        for (let i = 0; i < n; i++) map.set(f[i * NF + 7], f.subarray(i * NF, i * NF + NF));
+        const last = snaps[snaps.length - 1];
+        if (!last || last.tick !== tick) { snaps.push({t: performance.now(), tick, map, total, n}); if (snaps.length > 2) snaps.shift(); }
+      }
+    } catch (e) { /* ignore */ }
+  }
+  setTimeout(pollCells, 100);
+}
+
+// ---- drawing ----
+function rgb(r, g, b, a) { return `rgba(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0},${a})`; }
+function draw() {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const h = camH(), sx = W / cam.w, sy = H / h;
+  if (frameBmp) {
+    ctx.imageSmoothingEnabled = cam.w < worldW / 2;
+    ctx.drawImage(frameBmp, cam.x, cam.y, cam.w, h, 0, 0, W, H);
+  }
+  const zoomed = cam.w * h <= MAX_AREA;
+  let hud = zoomed ? "" : "휠로 확대하면 세포 하나하나가 보입니다";
+  let found = null;
+  if (zoomed && snaps.length) {
+    if (frameBmp) { ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(0, 0, W, H); }
+    const cur = snaps[snaps.length - 1], prev = snaps.length > 1 ? snaps[0] : null;
+    const span = prev ? Math.max(cur.t - prev.t, 1) : 1;
+    const a = prev ? Math.min((performance.now() - cur.t) / span, 1) : 1;
+    const lerp = (p, q, t) => p + (q - p) * t;
+    const R0 = Math.max(sx * 0.42, 1.2);
+    const drawCell = (x, y, row, alpha, grow) => {
+      if (selected !== null && row[12] !== selected) alpha *= 0.15;
+      const px = (x - cam.x) * sx, py = (y - cam.y) * sy;
+      if (px < -20 || py < -20 || px > W + 20 || py > H + 20) return;
+      const r = Math.max(R0 * Math.cbrt(row[2] / 0.02) * grow, 1.2);
+      const n = row[3];
+      // swim trail = the swimming vector (top speed × brain output); currents are not included
+      if (row[10] || row[11]) {
+        ctx.strokeStyle = rgb(row[4], row[5], row[6], 0.35 * alpha); ctx.lineWidth = Math.max(r * 0.35, 1);
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px - row[10] * sx * 4, py - row[11] * sy * 4); ctx.stroke();
+      }
+      const copies = n > 1 ? Math.min(Math.round(Math.log2(n)) + 1, 6) : 1;
+      for (let k = 0; k < copies; k++) {
+        const ang = k * 2.4, off = k ? r * 0.9 : 0;
+        const cx = px + Math.cos(ang) * off, cy = py + Math.sin(ang) * off;
+        const gr = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
+        gr.addColorStop(0, rgb(Math.min(row[4] + .25, 1), Math.min(row[5] + .25, 1), Math.min(row[6] + .25, 1), 0.85 * alpha));
+        gr.addColorStop(1, rgb(row[4], row[5], row[6], 0.75 * alpha));
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+        if (r > 3) { ctx.strokeStyle = rgb(row[4] * .6, row[5] * .6, row[6] * .6, 0.9 * alpha); ctx.lineWidth = 1; ctx.stroke(); }
+      }
+      // predation this tick (simulated event): eater gets a bright ring, the bitten cell a red rim
+      const ev = row[13] | 0;
+      if (ev & 1) { ctx.strokeStyle = `rgba(255,236,170,${0.9 * alpha})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, r + 3, 0, Math.PI * 2); ctx.stroke(); }
+      if (ev & 2) { ctx.strokeStyle = `rgba(235,80,60,${0.9 * alpha})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, r + 1, 0, Math.PI * 2); ctx.stroke(); }
+      if (n > 1 && r > 5) { ctx.fillStyle = "rgba(230,240,245,.85)"; ctx.font = "11px system-ui"; ctx.fillText("×" + fmt(n, 0), px + r + 2, py - r); }
+      if (hover && Math.hypot(hover.px - px, hover.py - py) < Math.max(r, 4)) found = row;
+    };
+    for (const [uid, row] of cur.map) {
+      const p = prev && prev.map.get(uid);
+      if (p) drawCell(lerp(p[0], row[0], a), lerp(p[1], row[1], a), row, 1, 1);
+      else {
+        const par = prev && prev.map.get(row[8]);  // newborn: emerges from its parent
+        if (par) drawCell(lerp(par[0], row[0], a), lerp(par[1], row[1], a), row, 1, 0.5 + 0.5 * a);
+        else drawCell(row[0], row[1], row, a, 1);
+      }
+    }
+    if (prev) for (const [uid, row] of prev.map) if (!cur.map.has(uid)) drawCell(row[0], row[1], row, 1 - a, 1);  // died
+    hud = `확대 보기 · 세포 ${cur.total.toLocaleString()}개` + (cur.total > cur.n ? ` (그중 고정 표본 ${cur.n.toLocaleString()}개 표시)` : "") +
+          (st && st.speed === 0 ? " · 성장과 분열을 보려면 배속을 '관찰'로" : "");
+  } else if (zoomed) hud = "세포를 불러오는 중…";
+  $("hud").textContent = hud;
+  const tip = $("tip");
+  if (found && hover) {
+    tip.hidden = false;
+    tip.innerHTML = `${KIND[found[9] | 0]} · 종 #${found[12] | 0}${found[14] ? " · 군체" : ""}<br>세포 크기 ${fmt(found[2], 4)} · 세포 ${fmt(found[3], 0)}개<br>헤엄 ${fmt(Math.hypot(found[10], found[11]), 2)} 칸/tick · 깊이 ${found[1] | 0}칸`;
+    tip.style.left = Math.min(hover.px + 14, W - 200) + "px"; tip.style.top = (hover.py + 14) + "px";
+  } else tip.hidden = true;
+  requestAnimationFrame(draw);
+}
+
+function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join(""); }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function chart(canvas, hist, series, log) {
+  const dpr = devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  if (!hist || hist.length < 2) return;
+  const tr = v => log ? Math.log10(Math.max(v, 1e-3)) : v;
+  let lo = Infinity, hi = -Infinity;
+  for (const s of series) for (const h of hist) { const v = tr(h[s.key]); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const t0 = hist[0].tick, t1 = hist[hist.length - 1].tick, pad = 4, left = 44;
+  g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.font = "11px system-ui"; g.lineWidth = 1;
+  for (let i = 0; i <= 2; i++) {
+    const v = lo + (hi - lo) * i / 2, y = H - pad - (H - 2 * pad) * i / 2;
+    g.beginPath(); g.moveTo(left, y); g.lineTo(W, y); g.stroke();
+    g.fillText(log ? "1e" + v.toFixed(0) : fmt(v, 1), 0, y + 4);
+  }
+  for (const s of series) {
+    g.strokeStyle = css(s.color); g.lineWidth = 1.6; g.beginPath();
+    hist.forEach((h, i) => {
+      const x = left + (W - left) * (h.tick - t0) / Math.max(t1 - t0, 1);
+      const y = H - pad - (H - 2 * pad) * (tr(h[s.key]) - lo) / (hi - lo);
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+  }
+}
+// ?view=x,y,w opens the camera on that world rect (e.g. a shareable spot)
+const qv = new URLSearchParams(location.search).get("view");
+if (qv) { const [x, y, w] = qv.split(",").map(Number); if (w > 0) { cam = {x, y, w}; requestAnimationFrame(() => { clampCam(); sendView(); }); } }
+// ?t=TICK opens the time machine at that moment
+const qt = new URLSearchParams(location.search).get("t");
+if (qt !== null && !Number.isNaN(+qt)) { replayT = +qt; setMode("replay"); }
+async function pollSpecies() {
+  try {
+    tree = await (await fetch(mode === "replay" ? `/species.json?t=${replayT}` : "/species.json", {cache: "no-store"})).json();
+    drawTree();
+  } catch (e) { /* offline */ }
+  setTimeout(pollSpecies, 2500);
+}
+function drawTree() {
+  const c = $("tree"), dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+  c.width = W * dpr; c.height = H * dpr;
+  const g = c.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  treeLanes = [];
+  if (!tree.length) { g.fillStyle = css("--muted"); g.font = "12px system-ui"; g.fillText("종 판별 대기 중 (2,000 tick마다)", 8, 20); return; }
+  // lanes: depth-first so every daughter sits right under its lineage
+  const kids = new Map(); for (const s of tree) { const k = s.parent ?? -1; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(s); }
+  const order = [], visit = p => { for (const s of (kids.get(p) || []).sort((a, b) => a.born - b.born)) { order.push(s); visit(s.id); } };
+  visit(-1);
+  for (const s of tree) if (!order.includes(s)) order.push(s);  // parents outside the window
+  const tEnd = Math.max(mode === "replay" ? replayT : (st ? st.tick : 1), 1), left = 40, right = W - 8;
+  const laneH = Math.max(Math.min((H - 24) / order.length, 18), 2), top = 6;
+  const X = t => left + (right - left) * t / tEnd;
+  const lane = new Map(); order.forEach((s, i) => lane.set(s.id, top + i * laneH + laneH / 2));
+  g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.font = "11px system-ui";
+  for (let i = 0; i <= 4; i++) { const t = tEnd * i / 4, x = X(t); g.beginPath(); g.moveTo(x, top); g.lineTo(x, H - 16); g.stroke(); g.fillText((t / 1000).toFixed(0) + "k", Math.min(x, W - 30), H - 3); }
+  for (const s of order) {
+    const y = lane.get(s.id), col = `rgb(${s.color.map(v => v * 255 | 0).join(",")})`;
+    if (s.parent !== null && lane.has(s.parent)) { g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); g.moveTo(X(s.born), lane.get(s.parent)); g.lineTo(X(s.born), y); g.stroke(); }
+    const end = s.alive ? tEnd : s.last;
+    for (let k = 0; k < s.history.length; k++) {
+      const [t, n] = s.history[k], t2 = k + 1 < s.history.length ? s.history[k + 1][0] : end;
+      const th = Math.min(Math.max(Math.log10(1 + n) * laneH / 5, 1), laneH * 0.9);
+      g.fillStyle = col; g.globalAlpha = selected === null || selected === s.id ? 1 : 0.3;
+      g.fillRect(X(t), y - th / 2, Math.max(X(t2) - X(t), 1), th);
+    }
+    g.globalAlpha = 1;
+    if (laneH >= 11) { g.fillStyle = css("--muted"); g.fillText("#" + s.id, 2, y + 4); }
+    treeLanes.push({id: s.id, y, x0: X(s.born), x1: X(end), s});
+  }
+}
+$("tree").addEventListener("click", e => {
+  const r = $("tree").getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  let best = null;
+  for (const l of treeLanes) if (x >= l.x0 - 4 && x <= l.x1 + 4 && (!best || Math.abs(l.y - y) < Math.abs(best.y - y))) best = l;
+  if (!best || Math.abs(best.y - y) > 12 || selected === best.id) { selected = null; $("spinfo").textContent = ""; }
+  else {
+    selected = best.id; const s = best.s, t = s.traits;
+    const main = [["산소 광합성", t.eta_photo_ox], ["비산소 광합성", t.eta_photo_an], ["화학합성", t.eta_h2], ["포식", t.eta_pred]].sort((a, b) => b[1] - a[1])[0][0];
+    $("spinfo").textContent = `종 #${s.id}` + (s.parent !== null ? ` (#${s.parent}에서 갈라짐)` : " (시조)") +
+      ` · 출현 tick ${s.born.toLocaleString()} · ${s.alive ? "살아 있음" : "멸종 tick " + s.last.toLocaleString()} · 세포 ${fmt(s.cells, 0)}개 · 주 대사: ${main}` +
+      ` · 최적 온도 ${t.t_opt.toFixed(0)}°C · 헤엄 ${t.speed.toFixed(2)} · η 호기 ${t.eta_aer.toFixed(2)}`;
+  }
+  drawTree();
+});
+pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); requestAnimationFrame(draw);
+</script>
+</body>
+</html>

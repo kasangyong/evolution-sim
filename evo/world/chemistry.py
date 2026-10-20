@@ -52,7 +52,7 @@ class Chemistry:
                 d -= d3
                 c += 0.5 * d3
                 m += 0.5 * d3
-                n += (d1 + d2 + d3) / CN_RATIO
+                n += (d1 + d2 + d3) / CHEM_DTYPE(CN_RATIO)  # bare literal would be f32
 
                 nl = self.cfg.k_den * (self.cfg.k_half / (self.cfg.k_half + o)) * n
                 n -= nl
@@ -64,7 +64,7 @@ class Chemistry:
                     br = self.cfg.k_bury_r * r
                     r -= br
                     self.col_sink[0, x] += bd
-                    self.col_sink[1, x] += bd / CN_RATIO
+                    self.col_sink[1, x] += bd / CHEM_DTYPE(CN_RATIO)
                     self.col_sink[2, x] += 4.0 * bd + 2.0 * br
 
                 self.world.chem[H, x, y], self.world.chem[R, x, y], self.world.chem[X, x, y] = h, r, xx

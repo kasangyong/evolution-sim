@@ -15,6 +15,8 @@ REACTIONS = {
     "sulfur_fixation": {"R": -2, "C": -1, "B": 1, "X": 2},
     "sulfur_oxidation": {"R": -2, "O": -1, "X": 2},
     "photosynthesis": {"C": -1, "B": 1, "O": 1},
+    # same stoichiometry as sulfur_fixation, but light pays ΔG (stage 3a, the first photosynthesis)
+    "anoxygenic_photosynthesis": {"R": -2, "C": -1, "B": 1, "X": 2},
     "aerobic_respiration": {"B": -1, "O": -1, "C": 1},
     "anaerobic_respiration": {"B": -1, "X": -2, "C": 1, "R": 2},
     "methanogenesis": {"B": -2, "C": 1, "M": 1},

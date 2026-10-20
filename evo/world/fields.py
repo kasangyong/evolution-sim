@@ -32,6 +32,12 @@ def make_terrain(cfg: WorldConfig) -> tuple[np.ndarray, np.ndarray]:
 
     lo, hi = int(slope_end * w) + 10, w - 10
     xs = np.sort(rng.choice(np.arange(lo, hi, 16), size=cfg.n_vents, replace=False))
+    sigma = max(cfg.seamount_width_frac * w, 1.0)
+    top = cfg.seamount_depth_frac * d
+    for x0 in xs[: cfg.n_shallow_vents]:
+        bump = np.exp(-(((np.arange(w) - x0) / sigma) ** 2))
+        floor = np.minimum(floor, np.round(floor - (floor - top) * bump).astype(np.int32))
+    floor = np.clip(floor, 8, d - 2)
     vents = np.stack([xs, floor[xs] - 1], axis=1).astype(np.int32)
     return floor, vents
 
@@ -144,14 +150,15 @@ class World:
     def emit_vents(self):
         for v in range(self.cfg.n_vents):
             p = self.vents[v]
-            self.chem[H, p.x, p.y] += self.cfg.vent_h
-            self.chem[R, p.x, p.y] += self.cfg.vent_r
-            self.chem[C, p.x, p.y] += self.cfg.vent_c
-            self.chem[N, p.x, p.y] += self.cfg.vent_n
+            # CHEM_DTYPE(...): bare Python floats are f32 in kernels; the ledger needs the same value
+            self.chem[H, p.x, p.y] += CHEM_DTYPE(self.cfg.vent_h)
+            self.chem[R, p.x, p.y] += CHEM_DTYPE(self.cfg.vent_r)
+            self.chem[C, p.x, p.y] += CHEM_DTYPE(self.cfg.vent_c)
+            self.chem[N, p.x, p.y] += CHEM_DTYPE(self.cfg.vent_n)
         n = ti.cast(self.cfg.n_vents, ti.f64)
-        self.acc[SRC_C] += n * self.cfg.vent_c
-        self.acc[SRC_N] += n * self.cfg.vent_n
-        self.acc[SRC_E] += n * 2.0 * (self.cfg.vent_h + self.cfg.vent_r)
+        self.acc[SRC_C] += n * CHEM_DTYPE(self.cfg.vent_c)
+        self.acc[SRC_N] += n * CHEM_DTYPE(self.cfg.vent_n)
+        self.acc[SRC_E] += n * 2.0 * (CHEM_DTYPE(self.cfg.vent_h) + CHEM_DTYPE(self.cfg.vent_r))
 
     @ti.kernel
     def update_light_temp(self):

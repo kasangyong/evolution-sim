@@ -3,7 +3,7 @@ import taichi as ti
 
 from evo.config import ATM_C, ATM_O, D, O
 from evo.sim import Sim
-from evo.world.fields import BUR_CARB, BUR_ORG, CL_ICE
+from evo.world.fields import BUR_CARB, BUR_ORG, CL_ICE, CL_TS
 
 
 def test_budget_closes(small_cfg):
@@ -14,6 +14,8 @@ def test_budget_closes(small_cfg):
 
 
 def test_budget_closes_with_all_reactions_active(seeded_cfg):
+    # abiotic paths only: since stage 3a, photosynthesis can make O2 and break the O2-falls check
+    seeded_cfg.life.n_founders = 0
     sim = Sim(seeded_cfg)
     w0 = sim.world.chem.to_numpy()
     sim.step(3000)
@@ -84,3 +86,23 @@ def test_ice_hysteresis(small_cfg):
     assert down[0.05] == 1.0
     assert down[1.0] == 0.0 and up[1.0] == 1.0  # same CO2, two climates
     assert up[3.0] == 0.0  # snowball is escapable
+
+
+def test_volcanoes_free_a_snowball_without_forcing(small_cfg):
+    # stage 4a: under full ice, gas exchange and weathering stop; only volcanic CO2 reaches the
+    # atmosphere. Eruptions are 10× more frequent than default to keep the test short.
+    small_cfg.climate.volcano_p = 0.1
+    sim = Sim(small_cfg)
+    w, cl = sim.world, sim.climate
+    w.atm[ATM_C] = 0.05 * small_cfg.climate.c_ref
+    w.clim[CL_TS], w.clim[CL_ICE] = -20.0, 1.0
+    froze_until = None
+    for t in range(80_000):
+        cl.step()
+        if w.clim[CL_ICE] < 1.0:
+            froze_until = t
+            break
+    assert froze_until is not None and froze_until > 1000  # stayed frozen a while, then thawed
+    for _ in range(5000):
+        cl.step()
+    assert w.clim[CL_ICE] == 0.0
