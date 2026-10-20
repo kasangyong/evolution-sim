@@ -3,6 +3,7 @@ import taichi as ti
 
 from evo.config import CN_RATIO, C, D, H, LifeConfig, M, N, O, R, X
 from evo.life.genome import (
+    ADAPT_TAU,
     ADHESION,
     BRAIN,
     DIV_SIZE,
@@ -19,6 +20,7 @@ from evo.life.genome import (
     FOUNDER,
     GENE_RANGE,
     MUT_RATE,
+    N_BRAIN,
     N_GENES,
     N_HID,
     N_IN,
@@ -35,7 +37,11 @@ from evo.world.reactions import REACTIONS, delta_g
 DEAD, ALIVE, DYING = 0, 1, 2
 COLONY_ADHESION = 0.5  # stage 6: adhesion at which a multi-cell slot counts as a colony
 # brain outputs
-ACT_X, ACT_Y, ACT_HUNT, ACT_HOLD = range(4)
+# stage 7a: run-and-tumble like real bacteria; the brain cannot pick a direction, only when to
+# tumble (new random heading) and how fast to swim
+ACT_TUMBLE, ACT_SPEED, ACT_HUNT, ACT_HOLD = range(4)
+N_SENSE = 4  # temporally compared senses: H2, sulfide, O2, light
+ADAPT_UNSET = -1.0e9  # adaptation memory not yet set (first tick of a founder)
 # discrete actions need a clear signal: with a 0 threshold, tiny weights from the first mutation
 # would switch them on for half of all offspring
 ACT_ON = 0.5
@@ -108,6 +114,11 @@ class Agents:
         self.encounter_key = ti.field(ti.i64, shape=(world.w, world.d))
         self.slot_bits = max(1, (cap - 1).bit_length())
         self.act = ti.Vector.field(N_OUT, ti.f32, shape=cap)  # brain outputs
+        # stage 7a: adapted (remembered) log level of each sense, and swimming heading (radians)
+        self.adapt = ti.Vector.field(N_SENSE, ti.f32, shape=cap)
+        self.heading = ti.field(ti.f32, shape=cap)
+        self.brain_cost = ti.field(ti.f32, shape=cap)  # Σ|weight|, charged in metabolize
+        self.adapt.fill(ADAPT_UNSET)
         self.top = ti.field(ti.i32, shape=())
         self.next_uid = ti.field(ti.i64, shape=())
         # slot lottery when divisions outnumber free slots: Σ cells of dividing slots, free slots
@@ -192,8 +203,12 @@ class Agents:
                            + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x + 1, c.y]))
                 v = -0.5 * ((self.world.psi[c.x + 1, c.y] - self.world.psi[c.x, c.y])
                             + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x, c.y + 1]))
-                # active swimming from the brain, paid as k_move × speed² × body
-                swim = self.genome[i, SPEED] * ti.math.vec2(self.act[i][ACT_X], self.act[i][ACT_Y])
+                # run and tumble: past the threshold the cell picks a new random heading; it swims
+                # along its heading at the brain's speed (0 .. top speed), paid as k_move × v² × body
+                if self.act[i][ACT_TUMBLE] > ACT_ON:
+                    self.heading[i] = ti.random() * 6.2831853
+                speed = self.genome[i, SPEED] * ti.max(self.act[i][ACT_SPEED], 0.0)
+                swim = speed * ti.math.vec2(ti.cos(self.heading[i]), ti.sin(self.heading[i]))
                 self.energy[i] -= (self.cfg.k_move * swim.dot(swim)
                                    * ti.cast(self.body[i], ti.f32))
                 # cells in the bottom water row stick to the sediment (benthic mats): no passive
@@ -232,7 +247,9 @@ class Agents:
 
     @ti.kernel
     def think(self):
-        """Brain 8 -> 8 -> 4 (tanh) from genome weights; writes act[i]."""
+        """Brain 12 -> 8 -> 4 (tanh) from genome weights; writes act[i]. Inputs 8..11 compare each
+        sense (H2, sulfide, O2, light) with its adapted level, log(now / remembered), as bacterial
+        receptors do; the remembered level then relaxes toward now over ADAPT_TAU ticks."""
         for i in range(self.cap):
             if self.state[i] == ALIVE:
                 c = self.cell(i)
@@ -250,7 +267,24 @@ class Agents:
                     ti.log(size / ti.max(mean_size, 1e-9)),
                     self.energy[i] / (self.cfg.energy_cap * body),
                     ti.cast(self.world.floor[x] - y, ti.f32) / self.world.d,
+                    0.0, 0.0, 0.0, 0.0,
                 ])
+                now = ti.Vector([
+                    ti.log(ti.max(ti.cast(self.world.chem[H, x, y], ti.f32), 1e-6)),
+                    ti.log(ti.max(ti.cast(self.world.chem[R, x, y], ti.f32), 1e-6)),
+                    ti.log(ti.max(ti.cast(self.world.chem[O, x, y], ti.f32), 1e-6)),
+                    ti.log(ti.max(self.world.light[x, y], 1e-6)),
+                ])
+                if self.adapt[i][0] == ADAPT_UNSET:
+                    self.adapt[i] = now  # a founder starts adapted to where it is
+                tau = self.genome[i, ADAPT_TAU]
+                for s in ti.static(range(N_SENSE)):
+                    inp[8 + s] = ti.min(ti.max(now[s] - self.adapt[i][s], -5.0), 5.0)
+                    self.adapt[i][s] += (now[s] - self.adapt[i][s]) / tau
+                cost = 0.0
+                for k in range(N_BRAIN):  # a runtime loop: unrolling 136 steps bloats the kernel
+                    cost += ti.abs(self.genome[i, BRAIN + k])
+                self.brain_cost[i] = cost
                 hid = ti.Vector.zero(ti.f32, N_HID)
                 for h in ti.static(range(N_HID)):
                     z = self.genome[i, BRAIN + N_HID * N_IN + h]
@@ -416,6 +450,7 @@ class Agents:
                                                  + eta_sf + eta_so + eta_mo + tol
                                                  + self.genome[i, ETA_PRED]
                                                  + self.genome[i, ADHESION])
+                      + self.cfg.k_brain * self.brain_cost[i]
                       + self.cfg.k_tox * o2 * (1.0 - tol)) * b
 
                 # respire body when short of energy, highest yield first: O2 > X > methanogenic
@@ -520,6 +555,9 @@ class Agents:
                     self.energy[i] -= e_half
                     self.age[j] = 0
                     self.act[j] = ti.Vector.zero(ti.f32, N_OUT)
+                    self.adapt[j] = self.adapt[i]  # a daughter inherits the parent's adapted state
+                    self.heading[j] = ti.random() * 6.2831853
+                    self.brain_cost[j] = self.brain_cost[i]  # until its first think()
                     n_half = ti.max(0.5 * self.ncell[i], 1.0)
                     self.ncell[i] = n_half
                     self.ncell[j] = n_half

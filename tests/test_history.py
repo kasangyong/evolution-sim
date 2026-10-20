@@ -113,3 +113,28 @@ def test_writer_survives_a_file_held_open_by_a_reader(tmp_path):
     assert done.wait(10)  # producers never block
     flush_within()
     assert h.frame_ticks()[-1] >= 1000  # the writer kept going
+
+
+def test_long_runs_keep_a_thinned_but_complete_past(tmp_path):
+    # 4c bug (found at 13M ticks): repeated halving erased every old frame, and big snapshots
+    # crowded frames out. Retention is now logarithmic and frames/snapshots have separate shares.
+    h = History(tmp_path, Config(), budget_bytes=10**12, keep_recent=2000)
+    _fake_frame(h, 0)
+    h.flush()
+    one = h.used_bytes()
+    h.budget = int(150 * one / 0.6)  # room for ~150 frames in the frame share
+    for t in range(100, 100_000, 100):
+        _fake_frame(h, t)
+        if t % 10_000 == 0:
+            h.record_snapshot(t, {"x": np.zeros(20000)})  # much bigger than a frame
+        if t % 2000 == 0:
+            h.flush()  # real runs record every few tenths of a second; don't overrun the queue
+    h.flush()
+    assert h.dropped == 0
+    ticks = h.frame_ticks()
+    assert len(ticks) <= 160
+    assert ticks[0] == 0 and ticks[-1] == 99_900
+    recent = [t for t in ticks if t > 99_900 - 2000]
+    assert len(recent) >= 15  # the recent window stays dense
+    for lo in range(0, 100_000, 10_000):  # every tenth of the run still has a record
+        assert any(lo <= t < lo + 10_000 for t in ticks), lo

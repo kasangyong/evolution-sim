@@ -23,6 +23,7 @@ CELL_DTYPE = np.dtype([("x", "<u2"), ("y", "<u2"), ("size", "<f2"), ("ncell", "<
                        ("vx", "<f2"), ("vy", "<f2"), ("species", "<u4"), ("event", "u1"),
                        ("colony", "u1")])
 POS_SCALE = 64.0  # positions stored as u16 in 1/64 grid cells
+SHARE = {"frame": 0.6, "snap": 0.4}  # budget split, so big snapshots cannot starve frames
 
 
 def pack_cells(rows: np.ndarray) -> np.ndarray:
@@ -67,6 +68,7 @@ class History:
         self.sizes: dict[Path, int] = {}
         self.dropped = 0  # records skipped because the writer fell behind (queue full)
         self.errors = 0  # records that failed to write (e.g. disk full)
+        self.coarse = {"frame": 1, "snap": 1}  # spacing multiplier, doubled while over budget
         self.current = 0
         self._save_branches()
         self.q: queue.Queue = queue.Queue(maxsize=64)
@@ -179,29 +181,52 @@ class History:
         with self.lock:
             return {(b["parent"], b["fork_tick"]) for b in self.branches if b["parent"] is not None}
 
+    def _kind_bytes(self, kind: str) -> int:
+        sub = "frames" if kind == "frame" else "snaps"
+        with self.lock:
+            return sum(v for p, v in self.sizes.items() if p.parent.name == sub)
+
+    def _keep(self, kind: str, tick: int, newest: int) -> bool:
+        """Logarithmic retention: the spacing between kept records doubles each time the age
+        doubles past keep_recent (×coarse when the budget is still exceeded), so the number of
+        records grows only with log(run length) and old history thins but never vanishes."""
+        every = self.frame_every if kind == "frame" else self.snap_every
+        age = max(newest - tick, 0)
+        # age in [K·2^(l-1), K·2^l) keeps every 2^l-th record: each band holds about K/(2·every)
+        level = int(np.log2(age / self.keep_recent)) + 1 if age >= self.keep_recent else 0
+        step = self.coarse[kind] * (1 << level)  # in units of `every`
+        return round(tick / every) % step == 0
+
     def _thin(self):
-        """Drop every other old record (older than keep_recent behind the newest) until under budget;
-        the first record, fork points and the recent window are kept."""
+        """Bring each kind under its share of the budget by logarithmic retention; if that is not
+        enough, double the spacing everywhere (coarse) and try again. The first and newest records
+        and fork points are always kept."""
         protected = self._protected()
         for kind in ("frame", "snap"):
             table = self.frames if kind == "frame" else self.snaps
-            with self.lock:
-                newest = max((t for ticks in table.values() for t in ticks), default=0)
-                victims = []
-                for b, ticks in table.items():
-                    old = sorted(t for t in ticks if t < newest - self.keep_recent)
-                    victims += [(b, t) for t in old[1::2] if (b, t) not in protected]
-            for b, t in victims:
-                p = self.path(kind, b, t)
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    continue  # a reader has it open (Windows); retry at the next thinning
+            limit = SHARE[kind] * self.budget
+            for _ in range(12):  # coarse can grow to 2^12 at most per call
+                if self._kind_bytes(kind) <= limit:
+                    break
                 with self.lock:
-                    table[b].remove(t)
-                    self.sizes.pop(p, None)
-                if self.used_bytes() <= self.budget:
-                    return
+                    newest = max((t for ticks in table.values() for t in ticks), default=0)
+                    first = min((t for ticks in table.values() for t in ticks), default=0)
+                    victims = [(b, t) for b, ticks in table.items() for t in ticks
+                               if t not in (first, newest) and (b, t) not in protected
+                               and not self._keep(kind, t, newest)]
+                removed = 0
+                for b, t in victims:
+                    p = self.path(kind, b, t)
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        continue  # a reader has it open (Windows); retry at the next thinning
+                    with self.lock:
+                        table[b].remove(t)
+                        self.sizes.pop(p, None)
+                    removed += 1
+                if self._kind_bytes(kind) > limit and removed == 0:
+                    self.coarse[kind] *= 2  # the log rule alone is not enough: coarser everywhere
 
     def _save_branches(self):
         with self.lock:

@@ -123,6 +123,8 @@ class LifeConfig:
     k_pred: float = 0.05  # max bite per unit predator body per tick at η = 1
     assimilation: float = 0.6  # bitten body kept by the predator; the rest becomes detritus
     k_move: float = 0.01  # energy per unit body per (cell/tick)² of active movement
+    # stage 7a: nerves and receptors cost energy in proportion to the connection strengths
+    k_brain: float = 3.0e-5  # per unit body per unit Σ|weight| (≈1% of maintenance per weight)
 
 
 @dataclass

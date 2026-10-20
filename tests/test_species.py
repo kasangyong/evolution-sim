@@ -92,3 +92,52 @@ def test_small_but_distant_community_stays_a_species():
     assert distance(traits(far[:1]), traits(_pop(1)))[0] > SpeciesTracker.KEEP * 0.2
     ids = tr.update(0, np.concatenate([_pop(1000), far]), np.ones(1003))  # 0.3% of cells
     assert len(set(ids)) == 2 and ids[-1] != ids[0]
+
+
+def test_tree_view_keeps_big_living_species_and_their_ancestors():
+    # long runs make thousands of species; the browser shows the major ones and how they connect
+    from evo.ui.web import TREE_BIGGEST, major_species
+
+    tree = [{"id": 0, "parent": None, "alive": False, "cells": 0, "history": [[0, 10.0]]}]
+    for i in range(1, 300):  # a long chain of tiny extinct species
+        tree.append({"id": i, "parent": i - 1, "alive": False, "cells": 0,
+                     "history": [[i, 1.0]]})
+    tree.append({"id": 300, "parent": 299, "alive": True, "cells": 5000.0,
+                 "history": [[300, 5000.0]]})
+    shown = {sp["id"] for sp in major_species(tree)}
+    assert 300 in shown and 299 in shown and 0 in shown  # living giant + its whole ancestry
+    small = [{"id": 1000 + k, "parent": 0, "alive": False, "cells": 0, "history": [[5, 1.0]]}
+             for k in range(500)]  # unrelated tiny side branches are left out
+    shown2 = {sp["id"] for sp in major_species(tree + small)}
+    assert len(shown2 - shown) <= TREE_BIGGEST
+
+
+def test_species_history_stays_bounded_on_long_runs():
+    # S3 found memory creeping up over 24 h; per-species history is now capped
+    from evo.analysis.species import HISTORY_POINTS
+
+    tr = SpeciesTracker()
+    for t in range(0, 2000 * 2000, 2000):
+        tr.update(t, _pop(50), np.ones(50))
+    hist = tr.species[0]["history"]
+    assert len(hist) <= HISTORY_POINTS
+    assert hist[0][0] == 0 and hist[-1][0] == 2000 * 1999  # first and latest kept
+
+
+def test_ids_stay_put_across_checks_and_empty_leaders_drop():
+    # previous centres seed the clustering: a stable population keeps its id check after check,
+    # and a species that lost all its members does not linger as an empty "alive" species
+    rng = np.random.default_rng(3)
+    tr = SpeciesTracker()
+    base = _pop(400)
+    for t in range(0, 20_000, 2000):
+        g = base + rng.normal(0, 0.02, base.shape).astype(np.float32)  # ordinary variation
+        ids = tr.update(t, g, np.ones(400))
+        assert set(ids) == {0}
+    assert len(tr.species) == 1
+    far = _pop(300, **{str(ETA_PHOTO_OX): GENE_RANGE[ETA_PHOTO_OX][1], str(ETA_H2): 0.0,
+                       str(T_OPT): 5.0, str(ETA_AER): GENE_RANGE[ETA_AER][1], str(O2_TOL): 1.0,
+                       str(COL_R): 0.0, str(ETA_PRED): GENE_RANGE[ETA_PRED][1], str(SPEED): 1.0})
+    tr.update(20_000, far, np.ones(300))  # the old population is gone entirely
+    alive = [s for s in tr.species if s["alive"]]
+    assert len(alive) == 1 and alive[0]["id"] != 0 and alive[0]["cells"] == 300.0

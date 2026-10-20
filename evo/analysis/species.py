@@ -10,6 +10,7 @@ import numpy as np
 
 from evo.life.genome import GENE_RANGE, TRAIT_GENES
 
+HISTORY_POINTS = 256  # per species; halved (every other point) when exceeded
 _IDX = np.array(TRAIT_GENES)
 _LO = np.array([GENE_RANGE[g][0] for g in TRAIT_GENES], np.float32)
 _SPAN = np.array([GENE_RANGE[g][1] - GENE_RANGE[g][0] for g in TRAIT_GENES], np.float32)
@@ -56,7 +57,11 @@ class SpeciesTracker:
             return np.zeros(0, np.int32)
         t = traits(genomes)
         pick = self.rng.choice(n, size=min(n, self.sample), replace=False)
-        leaders: list[np.ndarray] = []
+        # last time's species centres lead first, so the same population keeps the same id;
+        # only genomes far from all of them start new clusters (random leaders alone redrew the
+        # boundaries every check and made ids flicker)
+        leaders: list[np.ndarray] = [np.array(sp["centre"], np.float32) for sp in self.species
+                                     if sp["last"] == self.last_tick]
         for v in t[pick]:
             if not leaders or distance(np.array(leaders), v).min() > self.threshold:
                 leaders.append(v)
@@ -75,6 +80,11 @@ class SpeciesTracker:
             lead = lead[big | (d_big > self.KEEP * self.threshold)]
             member = np.concatenate([np.argmin(distance(t[i:i + 8192, None, :], lead[None]), axis=1)
                                      for i in range(0, n, 8192)])
+        # a leader nobody joined (a previous centre with no members now) is no cluster
+        used = np.unique(member)
+        if len(used) < len(lead):
+            lead = lead[used]
+            member = np.searchsorted(used, member)
         centres = np.zeros_like(lead)
         cells = np.zeros(len(lead))
         for k in range(len(lead)):
@@ -106,6 +116,8 @@ class SpeciesTracker:
                 sp = self.species[cluster_id[k]]
                 sp["centre"], sp["cells"], sp["last"] = centres[k].tolist(), float(cells[k]), tick
                 sp["history"].append([tick, float(cells[k])])
+                if len(sp["history"]) > HISTORY_POINTS:  # bounded memory over very long runs
+                    sp["history"] = sp["history"][:-1:2] + sp["history"][-1:]
             self.species[cluster_id[k]]["alive"] = True
         self.last_tick = tick
         return cluster_id[member]

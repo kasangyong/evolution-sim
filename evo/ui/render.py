@@ -196,13 +196,14 @@ class Renderer:
                         n = self.agents.ncell[i]
                         col = self.pigment(i)
                         act = self.agents.act[i]
-                        sp = self.agents.genome[i, SPEED]
+                        sp = self.agents.genome[i, SPEED] * ti.max(act[1], 0.0)  # ACT_SPEED
+                        hd = self.agents.heading[i]
                         row = ti.Vector([
                             p.x, p.y, ti.cast(self.agents.body[i], ti.f32) / n, n,
                             col[0], col[1], col[2],
                             ti.cast(self.agents.uid[i] % 16777216, ti.f32),
                             ti.cast(self.agents.parent[i] % 16777216, ti.f32),
-                            ti.cast(self.kind(i), ti.f32), sp * act[0], sp * act[1],
+                            ti.cast(self.kind(i), ti.f32), sp * ti.cos(hd), sp * ti.sin(hd),
                             ti.cast(self.agents.species[i], ti.f32),
                             ti.cast(self.agents.event[i], ti.f32),
                             ti.cast(self.agents.is_colony(i), ti.f32)])
@@ -214,3 +215,28 @@ class Renderer:
         self.extract(x0, y0, x1, y1)
         n = min(self.n_cells[None], self.max_cells)
         return self.cells.to_numpy()[:n], self.n_in[None]
+
+
+def closeup(background: np.ndarray, rows: np.ndarray, x0: float, y0: float, scale: int) -> np.ndarray:
+    """Event close-up (numpy, any thread): the natural-colour crop scaled by `scale`, with every
+    cell drawn as a disc in its pigment colour, sized by cell body like the browser zoom view,
+    with a darker rim; colonies get a light ring."""
+    img = background.repeat(scale, axis=0).repeat(scale, axis=1).astype(np.float32)
+    img *= 0.7  # dim the water so the cells read
+    h, w, _ = img.shape
+    f = {name: k for k, name in enumerate(CELL_FIELDS)}
+    for r in rows:
+        cx, cy = (r[f["x"]] - x0) * scale, (r[f["y"]] - y0) * scale
+        rad = max(scale * 0.42 * np.cbrt(max(r[f["size"]], 1e-6) / 0.02), 1.5)
+        xa, xb = int(max(cx - rad - 2, 0)), int(min(cx + rad + 3, w))
+        ya, yb = int(max(cy - rad - 2, 0)), int(min(cy + rad + 3, h))
+        if xa >= xb or ya >= yb:
+            continue
+        yy, xx = np.mgrid[ya:yb, xa:xb]
+        d = np.hypot(xx + 0.5 - cx, yy + 0.5 - cy)
+        col = np.array([r[f["r"]], r[f["g"]], r[f["b"]]]) * 255
+        img[ya:yb, xa:xb][d <= rad] = col
+        img[ya:yb, xa:xb][(d > rad - 1.2) & (d <= rad)] = col * 0.55
+        if r[f["colony"]] > 0:
+            img[ya:yb, xa:xb][(d > rad + 0.8) & (d <= rad + 1.8)] = (235, 240, 245)
+    return np.clip(img, 0, 255).astype(np.uint8)

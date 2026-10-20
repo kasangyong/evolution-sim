@@ -46,6 +46,13 @@
   .card.wide { grid-column: 1 / -1; }
   #tree { width: 100%; height: 260px; display: block; cursor: pointer; }
   #spinfo { font-size: 13px; color: var(--muted); margin-top: 6px; min-height: 1.5em; }
+  #events { display: grid; gap: 10px; max-height: 520px; overflow-y: auto; }
+  .ev { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start; border-top: 1px solid var(--line); padding-top: 10px; }
+  .ev img { width: 200px; height: auto; border-radius: 4px; border: 1px solid var(--line); image-rendering: pixelated; }
+  .ev b { display: block; color: var(--text); }
+  .ev .when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .ev p { margin: 4px 0; font-size: 13px; }
+  @media (max-width: 600px) { .ev { grid-template-columns: 1fr; } .ev img { width: 100%; } }
   .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
   .timeline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
   .timeline input[type=range] { flex: 1 1 320px; min-width: 0; accent-color: var(--accent); }
@@ -116,6 +123,10 @@
       <h2>수면 온도 (°C)</h2><canvas class="chart" id="c_temp"></canvas>
     </div>
     <div class="card wide">
+      <h2>사건 기록 · 시뮬레이션이 스스로 감지해 그 순간을 찍어 둔 변화 (누르면 그때 그곳으로 되감기)</h2>
+      <div id="events"><span class="note">아직 감지된 사건이 없습니다. 광합성 번성, 산소 증가, 결빙, 대멸종, 새 주요 종, 새 능력 확산 등을 지켜봅니다.</span></div>
+    </div>
+    <div class="card wide">
       <h2>계통수 · 종이 생기고 갈라지고 사라진 역사 (막대 굵기 = 세포 수, 선 = 갈라져 나온 곳). 종을 누르면 확대 화면에서 강조합니다</h2>
       <canvas id="tree" aria-label="계통수"></canvas>
       <div id="spinfo"></div>
@@ -138,7 +149,7 @@ let cam = {x: 0, y: 0, w: 1024};       // world rect: left, top, width (height f
 let snaps = [];                        // last two cell snapshots {t, tick, map: uid -> row}
 let hover = null;
 let mode = "live", replayT = 0, playing = false, hindex = null;
-let tree = [], selected = null, treeLanes = [];
+let tree = [], selected = null, treeLanes = [], treeTotal = 0, treeAlive = 0;
 const geo = t => (t * 1000 / 1e6).toLocaleString(undefined, {maximumFractionDigits: 1});
 
 function post(cmd) {
@@ -420,7 +431,8 @@ const qt = new URLSearchParams(location.search).get("t");
 if (qt !== null && !Number.isNaN(+qt)) { replayT = +qt; setMode("replay"); }
 async function pollSpecies() {
   try {
-    tree = await (await fetch(mode === "replay" ? `/species.json?t=${replayT}` : "/species.json", {cache: "no-store"})).json();
+    const sv = await (await fetch(mode === "replay" ? `/species.json?t=${replayT}` : "/species.json", {cache: "no-store"})).json();
+    tree = sv.species; treeTotal = sv.total; treeAlive = sv.alive;
     drawTree();
   } catch (e) { /* offline */ }
   setTimeout(pollSpecies, 2500);
@@ -442,6 +454,7 @@ function drawTree() {
   const lane = new Map(); order.forEach((s, i) => lane.set(s.id, top + i * laneH + laneH / 2));
   g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.font = "11px system-ui";
   for (let i = 0; i <= 4; i++) { const t = tEnd * i / 4, x = X(t); g.beginPath(); g.moveTo(x, top); g.lineTo(x, H - 16); g.stroke(); g.fillText((t / 1000).toFixed(0) + "k", Math.min(x, W - 30), H - 3); }
+  if (treeTotal > tree.length) { g.fillStyle = css("--muted"); g.fillText(`전체 ${treeTotal.toLocaleString()}종 중 큰 종과 그 조상 ${tree.length}종 표시 · 지금 살아 있는 종 ${treeAlive}`, left + 6, H - 3 - 12); }
   for (const s of order) {
     const y = lane.get(s.id), col = `rgb(${s.color.map(v => v * 255 | 0).join(",")})`;
     if (s.parent !== null && lane.has(s.parent)) { g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); g.moveTo(X(s.born), lane.get(s.parent)); g.lineTo(X(s.born), y); g.stroke(); }
@@ -471,7 +484,31 @@ $("tree").addEventListener("click", e => {
   }
   drawTree();
 });
-pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); requestAnimationFrame(draw);
+let eventsShown = -1;
+async function pollEvents() {
+  try {
+    const evs = await (await fetch("/events.json", {cache: "no-store"})).json();
+    if (evs.length !== eventsShown && evs.length) {
+      eventsShown = evs.length;
+      $("events").innerHTML = evs.slice().reverse().map((e, i) => `
+        <div class="ev">
+          <img src="/events/${e.zoom || e.image}" alt="${e.title} 순간의 화면" loading="lazy">
+          <div><b>${e.title}</b>
+            <span class="when">tick ${e.tick.toLocaleString()} · 지질 환산 약 ${geo(e.tick)}백만 년${e.branch ? " · 갈래 " + e.branch : ""}</span>
+            <p>${e.detail}</p>
+            <button data-ev="${evs.length - 1 - i}">그때로 가기</button></div>
+        </div>`).join("");
+      $("events").querySelectorAll("button[data-ev]").forEach(btn => btn.onclick = () => {
+        const e = evs[+btn.dataset.ev];
+        replayT = e.tick; setMode("replay");
+        if (e.where) { cam.w = 60; cam.x = e.where[0] - 30; cam.y = e.where[1] - camH() / 2; clampCam(); sendView(); }
+        window.scrollTo({top: 0, behavior: "smooth"});
+      });
+    }
+  } catch (e) { /* offline */ }
+  setTimeout(pollEvents, 3000);
+}
+pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); pollEvents(); requestAnimationFrame(draw);
 </script>
 </body>
 </html>

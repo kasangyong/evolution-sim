@@ -45,7 +45,8 @@ def test_brain_matches_hand_computation(small_cfg):
     a = sim.life
     a.census()
     a.think()
-    # rebuild the 8 inputs exactly as the kernel does
+    # rebuild the 12 inputs exactly as the kernel does; on its first tick a founder is adapted to
+    # where it is, so the four temporal-comparison senses read 0
     x, y = 60, 10
     wd = sim.world
     k_half = small_cfg.life.k_half
@@ -54,7 +55,7 @@ def test_brain_matches_hand_computation(small_cfg):
     inp = np.array([
         wd.light[x, y], max(r, 0) / (max(r, 0) + k_half), max(o, 0) / (max(o, 0) + k_half),
         (wd.temp[x, y] - g[4]) / g[5], np.log(1 + 1.0), np.log(1.0),
-        0.005 / (small_cfg.life.energy_cap * 0.01), (wd.floor_np[x] - y) / wd.d,
+        0.005 / (small_cfg.life.energy_cap * 0.01), (wd.floor_np[x] - y) / wd.d, 0, 0, 0, 0,
     ], np.float32)
     w1 = w[: N_HID * N_IN].reshape(N_HID, N_IN)
     b1 = w[N_HID * N_IN: N_HID * N_IN + N_HID]
@@ -78,12 +79,13 @@ def test_swimming_costs_speed_squared(small_cfg):
     sim.world.update_light_temp()
     _place(sim, [(0.02, 0.01, {SPEED: 0.5})])
     a = sim.life
-    a.act[0] = [1.0, 0.0, 0.0, 0.0]
+    a.act[0] = [0.0, 1.0, 0.0, 0.0]  # no tumble, full speed along the heading (0 rad = +x)
+    a.heading[0] = 0.0
     x0 = a.pos[0][0]
     a.move()
     swim = 0.5
     assert a.energy[0] == pytest.approx(0.01 - small_cfg.life.k_move * swim**2 * 0.02, rel=1e-5)
-    assert a.pos[0][0] != x0
+    assert a.pos[0][0] == pytest.approx(x0 + swim, abs=0.05)  # + the ocean current there
 
 
 def _hunt(small_cfg, n_pred):

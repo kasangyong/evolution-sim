@@ -88,3 +88,19 @@ def test_crowded_view_keeps_the_same_sample_every_frame(small_cfg):
     # the GPU sample is exactly the numpy rule used for recorded frames
     expect = {u for u in range(1000, 1000 + n) if in_sample_np(u, n, 64)}
     assert set(first[:, uid_col].astype(int)) == expect
+
+
+def test_event_closeup_draws_each_cell_in_its_pigment():
+    from evo.ui.render import closeup
+
+    bg = np.zeros((36, 96, 3), np.uint8)
+    rows = np.zeros((2, len(CELL_FIELDS)), np.float32)
+    f = {n: k for k, n in enumerate(CELL_FIELDS)}
+    for i, (x, col) in enumerate(((10.5, (0.2, 0.6, 0.3)), (50.5, (0.6, 0.3, 0.4)))):
+        rows[i, f["x"]], rows[i, f["y"]], rows[i, f["size"]], rows[i, f["ncell"]] = x, 18.5, 0.02, 1
+        rows[i, f["r"]], rows[i, f["g"]], rows[i, f["b"]] = col
+    img = closeup(bg, rows, 0.0, 0.0, 8)
+    assert img.shape == (36 * 8, 96 * 8, 3)
+    assert tuple(img[18 * 8 + 4, 10 * 8 + 4]) == (51, 153, 76)  # centre of the first cell
+    assert tuple(img[18 * 8 + 4, 50 * 8 + 4]) == (153, 76, 102)
+    assert img[2, 2].sum() == 0  # water stays dark

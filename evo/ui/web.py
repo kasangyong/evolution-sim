@@ -13,18 +13,22 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 import taichi as ti
 
+from evo.analysis.events import EventDetector, Summary
 from evo.analysis.species import SpeciesTracker
 from evo.config import ATM_C, ATM_M, ATM_O, SPECIES_NAMES
 from evo.io.history import History, unpack_cells
 from evo.io.snapshot import capture, restore
 from evo.life.agents import ALIVE
 from evo.life.genome import (
+    BRAIN,
     ETA_AER,
     ETA_H2,
     ETA_PHOTO_AN,
     ETA_PHOTO_OX,
     ETA_PRED,
     GENE_RANGE,
+    N_HID,
+    N_IN,
     SPEED,
     T_OPT,
     TRAIT_GENES,
@@ -36,6 +40,7 @@ from evo.ui.render import (
     NATURAL_LAYER,
     TEMP_LAYER,
     Renderer,
+    closeup,
     in_sample_np,
 )
 from evo.world.fields import BUR_ORG, CL_ICE, CL_TS
@@ -69,15 +74,38 @@ class Shared:
         self.stats = b"{}"
         self.cells = b""
         self.tracker = SpeciesTracker()
+        self.events: list[dict] = []  # event journal entries, newest last
         self.commands: queue.Queue = queue.Queue()
 
 
-def species_view(tracker: SpeciesTracker, up_to: int | None) -> list[dict]:
-    """Tree for the browser: centre traits in real units, a pigment colour, thinned history."""
+TREE_BIGGEST, TREE_ALIVE = 40, 20  # lanes the browser can show; long runs make thousands of species
+
+
+def major_species(tree: list[dict]) -> list[dict]:
+    """The species worth a lane: the TREE_BIGGEST largest ever (peak cells), the TREE_ALIVE largest
+    living ones, and every ancestor of those so the branches connect."""
+    by_id = {sp["id"]: sp for sp in tree}
+    peak = {sp["id"]: max((h[1] for h in sp["history"]), default=0.0) for sp in tree}
+    keep = set(sorted(peak, key=peak.get, reverse=True)[:TREE_BIGGEST])
+    alive = sorted((sp for sp in tree if sp["alive"]), key=lambda sp: -sp["cells"])
+    keep |= {sp["id"] for sp in alive[:TREE_ALIVE]}
+    for sid in list(keep):
+        p = by_id[sid]["parent"]
+        while p is not None and p in by_id and p not in keep:
+            keep.add(p)
+            p = by_id[p]["parent"]
+    return [sp for sp in tree if sp["id"] in keep]
+
+
+def species_view(tracker: SpeciesTracker, up_to: int | None) -> dict:
+    """Tree for the browser: the major species with centre traits in real units, a pigment colour
+    and a thinned history, plus how many smaller species were left out."""
     lo = np.array([GENE_RANGE[g][0] for g in TRAIT_GENES])
     span = np.array([GENE_RANGE[g][1] - GENE_RANGE[g][0] for g in TRAIT_GENES])
+    tree = tracker.tree(up_to)
+    shown = major_species(tree)
     out = []
-    for sp in tracker.tree(up_to):
+    for sp in shown:
         g = lo + np.array(sp["centre"]) * span
         w = {"ox": g[ETA_PHOTO_OX], "an": g[ETA_PHOTO_AN], "pr": g[ETA_PRED], "ch": 0.3 + g[ETA_H2]}
         col = (w["ox"] * np.array([0.22, 0.62, 0.26]) + w["an"] * np.array([0.55, 0.30, 0.42])
@@ -94,7 +122,22 @@ def species_view(tracker: SpeciesTracker, up_to: int | None) -> list[dict]:
                                "eta_pred": float(g[ETA_PRED]), "speed": float(g[SPEED]),
                                "t_opt": float(g[T_OPT]),
                                "adhesion": float(g[len(TRAIT_GENES) - 1])}})
-    return out
+    return {"species": out, "total": len(tree), "alive": sum(sp["alive"] for sp in tree)}
+
+
+W1_SENSE = np.array([[BRAIN + N_IN * h + k for k in range(8, N_IN)] for h in range(N_HID)])
+W2_TUMBLE = np.array([BRAIN + N_IN * N_HID + N_HID + h for h in range(N_HID)])
+
+def chemotaxis_bias(g):
+    """Net share of cells wired to tumble when their own food sense falls (chemosynthesis:
+    H2, photosynthesis: light) minus those wired the other way. Drift makes the linearised
+    sensitivity Σ_h W2[tumble, h]·W1[h, s] large in either direction alike; only selection
+    tilts it toward "tumble when it gets worse"."""
+    sens = np.einsum("nh,nhs->ns", g[:, W2_TUMBLE], g[:, W1_SENSE])
+    photo = g[:, ETA_PHOTO_OX] + g[:, ETA_PHOTO_AN] > g[:, ETA_H2]
+    food = np.where(photo, sens[:, 3], sens[:, 0])  # senses: 0 H2, 1 sulfide, 2 O2, 3 light
+    swims = g[:, SPEED] > 0.1
+    return float(((food < -2.0) & swims).mean() - ((food > 2.0) & swims).mean())
 
 
 def cells_blob(tick: int, rows: np.ndarray, total: int) -> bytes:
@@ -131,6 +174,18 @@ def make_handler(shared: Shared, history: History):
             path, q = url.path, parse_qs(url.query)
             if path.startswith("/history/"):
                 self.history_get(path, q)
+                return
+            if path == "/events.json":
+                with shared.lock:
+                    body = json.dumps(shared.events[-300:]).encode()
+                self.send(body, "application/json")
+                return
+            if path.startswith("/events/") and path.endswith(".png"):
+                f = history.root / "events" / Path(path).name
+                if f.is_file():
+                    self.send(f.read_bytes(), "image/png")
+                else:
+                    self.send_error(404)
                 return
             if path == "/species.json":
                 try:
@@ -246,7 +301,33 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
     life = life_summary(sim)
     err = sim.budget_error()
     tps, last_frame, last_cells, last_hist = 0.0, 0.0, 0.0, -HISTORY_EVERY
+    hist_every = HISTORY_EVERY  # doubles whenever the chart history is halved: even spacing
     next_rec, next_snap, next_species = sim.tick, sim.tick, sim.tick
+
+    detector = EventDetector()
+    (history.root / "events").mkdir(exist_ok=True)
+
+    def save_event(ev):
+        """Capture the moment: the whole ocean, plus a close-up when the event has a place."""
+        recorder.draw_natural()
+        rgb = (np.clip(recorder.rgba.to_numpy()[:, :, :3], 0, 1) * 255).astype(np.uint8)
+        stem = f"{ev.tick:010d}_{ev.kind}"
+        (history.root / "events" / f"{stem}.png").write_bytes(png(rgb))
+        zoom = None
+        if ev.where is not None:
+            cx, cy = int(ev.where[0]), int(ev.where[1])
+            x0, y0 = max(min(cx - 48, w.w - 96), 0), max(min(cy - 18, w.d - 36), 0)
+            rows, _ = recorder.viewport_cells(x0, y0, x0 + 96, y0 + 36)
+            crop = closeup(np.ascontiguousarray(rgb[y0:y0 + 36, x0:x0 + 96]), rows, x0, y0, 8)
+            zoom = f"{stem}_zoom.png"
+            (history.root / "events" / zoom).write_bytes(png(crop))
+        entry = {"tick": ev.tick, "kind": ev.kind, "title": ev.title, "detail": ev.detail,
+                 "numbers": ev.numbers, "where": ev.where, "image": f"{stem}.png", "zoom": zoom,
+                 "branch": history.current}
+        with (history.root / "events.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with shared.lock:
+            shared.events.append(entry)
 
     def classify():
         a = sim.life
@@ -257,6 +338,45 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
         full = np.zeros(a.cap, np.int32)
         full[alive] = ids
         a.species.from_numpy(full)
+        if not alive.any():
+            return
+        # event journal: summarise the world and let the detectors look
+        pos = a.pos.to_numpy()[alive]
+        act = a.act.to_numpy()[alive]
+        lit_mask = w.light.to_numpy()[pos[:, 0].astype(int), pos[:, 1].astype(int)] > 0.01
+        lit = int(lit_mask.sum())
+
+        def densest(mask):
+            """Centre of the 32 × 12-cell block holding most of the masked slots."""
+            if not mask.any():
+                return None
+            hist, xe, ye = np.histogram2d(pos[mask, 0], pos[mask, 1], bins=(w.w // 32, w.d // 12),
+                                          range=((0, w.w), (0, w.d)))
+            i, j = np.unravel_index(np.argmax(hist), hist.shape)
+            return (float((xe[i] + xe[i + 1]) / 2), float((ye[j] + ye[j + 1]) / 2))
+        names = ("수소 화학합성", "산소 광합성", "비산소 광합성", "포식")
+        species = {}
+        for sid in np.unique(ids):
+            m = ids == sid
+            mean = g[m][:, [ETA_H2, ETA_PHOTO_OX, ETA_PHOTO_AN, ETA_PRED]].mean(axis=0)
+            # densest block, not the mean: a species spread over several vents averages to water
+            species[int(sid)] = (float(n[m].sum()), densest(m), names[int(np.argmax(mean))])
+        summary = Summary(
+            tick=sim.tick, cells=float(n.sum()), slots=int(alive.sum()), lit_slots=lit,
+            o2=float(w.atm[ATM_O]), ch4=float(w.atm[ATM_M]), co2=float(w.atm[ATM_C]),
+            ts=float(w.clim[CL_TS]), ice=float(w.clim[CL_ICE]),
+            pred_frac=float(((g[:, ETA_PRED] > 0.2) & (act[:, 2] > 0.5)).mean()),  # hunting now
+            colony_frac=float(a.colonies()[alive].mean()),
+            swim_frac=float(((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)).mean()),
+            sense_frac=max(chemotaxis_bias(g), 0.0),
+            species=species,
+            places={"bloom": densest(lit_mask),
+                    "predation": densest((g[:, ETA_PRED] > 0.2) & (act[:, 2] > 0.5)),
+                    "colony": densest(a.colonies()[alive]),
+                    "swimming": densest((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)),
+                    "chemotaxis": densest((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3))})
+        for ev in detector.update(summary):
+            save_event(ev)
 
     def record():
         nonlocal next_rec, next_snap, next_species
@@ -279,6 +399,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
                 "slots": int(sim.life.count())})
             next_rec = (sim.tick // history.frame_every + 1) * history.frame_every
 
+    w.update_light_temp()  # the first frame (tick 0) would otherwise be drawn before any light
     record()
 
     while True:
@@ -348,7 +469,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
         if done:
             tps = 0.8 * tps + 0.2 * done / max(time.perf_counter() - t0, 1e-6)
 
-        if sim.tick - last_hist >= HISTORY_EVERY:
+        if sim.tick - last_hist >= hist_every:
             last_hist = sim.tick
             life = life_summary(sim)
             err = sim.budget_error()
@@ -360,6 +481,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
                             "ice": float(w.clim[CL_ICE])})
             if len(history_list) > 1200:
                 history_list = history_list[::2]  # bounded payload over very long runs
+                hist_every *= 2
 
         if time.perf_counter() - last_frame >= FRAME_EVERY_S:
             last_frame = time.perf_counter()

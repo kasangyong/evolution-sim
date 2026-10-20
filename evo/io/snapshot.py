@@ -9,10 +9,10 @@ import numpy as np
 from evo.config import ChemConfig, ClimateConfig, Config, LifeConfig, WorldConfig
 from evo.world.ledger import Totals
 
-SCHEMA_VERSION = 2  # 2: stage 6 (adhesion gene)
+SCHEMA_VERSION = 3  # 2: stage 6 (adhesion gene); 3: stage 7a (12-input brain, senses)
 WORLD_FIELDS = ("chem", "atm", "clim", "acc")
 AGENT_FIELDS = ("state", "pos", "body", "energy", "age", "ncell", "uid", "parent", "genome", "free",
-                "act", "species")
+                "act", "species", "adapt", "heading")
 
 
 def capture(sim) -> dict:
