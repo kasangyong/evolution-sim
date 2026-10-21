@@ -1,4 +1,6 @@
-"""One S4 survival run: world seed and RNG seed = argv[1]; prints a single summary line."""
+"""One S4 survival run: world seed and RNG seed = argv[1], ticks = argv[2]; then optional
+sect.key=val config overrides and save=PATH (final genomes and cell counts, .npz). Prints a
+single summary line."""
 import sys
 import time
 
@@ -6,6 +8,7 @@ import numpy as np
 import taichi as ti
 
 seed, ticks = int(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 100_000
+opts = dict(a.split("=", 1) for a in sys.argv[3:] if "=" in a)
 ti.init(arch=ti.cuda, random_seed=seed, log_level=ti.WARN)
 
 from evo.config import ATM_O, Config, O
@@ -15,6 +18,10 @@ from evo.sim import Sim
 
 cfg = Config()
 cfg.world.seed = seed
+for path, val in opts.items():
+    if path != "save":
+        sect, key = path.split(".", 1)
+        setattr(getattr(cfg, sect), key, type(getattr(getattr(cfg, sect), key))(val))
 sim = Sim(cfg)
 t, worst, min_pop, first_photo = time.perf_counter(), 0.0, None, None
 while sim.tick < ticks and sim.life.count() > 0:
@@ -28,6 +35,10 @@ while sim.tick < ticks and sim.life.count() > 0:
     if first_photo is None and photic > 1000:
         first_photo = sim.tick  # first checkpoint with > 1000 cells living in light
 snap = sim.life.snapshot()
+if "save" in opts:
+    alive = sim.life.state.to_numpy() == ALIVE
+    np.savez_compressed(opts["save"], genome=sim.life.genome.to_numpy()[alive],
+                        ncell=sim.life.ncell.to_numpy()[alive])
 means = snap["genome"].mean(axis=0) if len(snap["body"]) else np.full(len(GENE_NAMES), np.nan)
 genes = " ".join(f"{g}={m:.3g}" for g, m in zip(GENE_NAMES[:6], means[:6]))
 status = "ALIVE" if sim.life.count() > 0 else f"EXTINCT@{sim.tick}"

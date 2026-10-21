@@ -18,7 +18,7 @@ from evo.analysis.species import SpeciesTracker
 from evo.config import ATM_C, ATM_M, ATM_O, SPECIES_NAMES
 from evo.io.history import History, unpack_cells
 from evo.io.snapshot import capture, restore
-from evo.life.agents import ALIVE
+from evo.life.agents import ACT_ON, ALIVE
 from evo.life.genome import (
     BRAIN,
     ETA_AER,
@@ -125,19 +125,40 @@ def species_view(tracker: SpeciesTracker, up_to: int | None) -> dict:
     return {"species": out, "total": len(tree), "alive": sum(sp["alive"] for sp in tree)}
 
 
-W1_SENSE = np.array([[BRAIN + N_IN * h + k for k in range(8, N_IN)] for h in range(N_HID)])
 W2_TUMBLE = np.array([BRAIN + N_IN * N_HID + N_HID + h for h in range(N_HID)])
+N_SENSES = N_IN - 8  # inputs 8.. are the adapted senses: 0 H2, 1 sulfide, 2 O2, 3 light
 
-def chemotaxis_bias(g):
-    """Net share of cells wired to tumble when their own food sense falls (chemosynthesis:
-    H2, photosynthesis: light) minus those wired the other way. Drift makes the linearised
-    sensitivity Σ_h W2[tumble, h]·W1[h, s] large in either direction alike; only selection
-    tilts it toward "tumble when it gets worse"."""
-    sens = np.einsum("nh,nhs->ns", g[:, W2_TUMBLE], g[:, W1_SENSE])
+
+def sense_bias(g, s):
+    """Per genome: +1 if its actual brain tumbles when sense s falls (input -1, the rest 0) and
+    not when it rises (+1), -1 for the reverse wiring, else 0. Runs the real tanh net with the
+    hidden biases and the tumble threshold, not a linearisation."""
+    w1 = g[:, BRAIN:BRAIN + N_IN * N_HID].reshape(-1, N_HID, N_IN)[:, :, 8 + s]
+    b1 = g[:, BRAIN + N_IN * N_HID:BRAIN + N_IN * N_HID + N_HID]
+    worse, better = (np.tanh((g[:, W2_TUMBLE] * np.tanh(b1 + w1 * x)).sum(axis=1)) > ACT_ON
+                     for x in (-1.0, 1.0))
+    return (worse & ~better).astype(np.int8) - (better & ~worse).astype(np.int8)
+
+
+def chemotaxis_bias(g, w=None):
+    """(food, control, tuned): net shares of swimming cells wired to tumble when a sense falls: food is
+    each cell's own food sense (chemosynthesis: H2, photosynthesis: light), control the largest
+    |share| over its other three senses. All cells descend from one founder, so a lineage that
+    spreads carries its wiring on every sense alike (measured, stage 7a evaluation); only a food
+    share well above the controls hints at selection. Shares are weighted by w (cells per slot). tuned marks the swimming cells wired to
+    tumble when their food falls."""
     photo = g[:, ETA_PHOTO_OX] + g[:, ETA_PHOTO_AN] > g[:, ETA_H2]
-    food = np.where(photo, sens[:, 3], sens[:, 0])  # senses: 0 H2, 1 sulfide, 2 O2, 3 light
+    food_s = np.where(photo, 3, 0)
     swims = g[:, SPEED] > 0.1
-    return float(((food < -2.0) & swims).mean() - ((food > 2.0) & swims).mean())
+    bias = np.stack([sense_bias(g, s) for s in range(N_SENSES)], axis=1) * swims[:, None]
+    rows = np.arange(len(g))
+    w = np.ones(len(g)) if w is None else w
+    food = float(np.average(bias[rows, food_s], weights=w)) if len(g) else 0.0
+    others = np.array([[s for s in range(N_SENSES) if s != f] for f in range(N_SENSES)])[food_s]
+    control = max((abs(float(np.average(bias[rows, others[:, k]], weights=w)))
+                   for k in range(N_SENSES - 1)),
+                  default=0.0) if len(g) else 0.0
+    return food, control, bias[rows, food_s] > 0
 
 
 def cells_blob(tick: int, rows: np.ndarray, total: int) -> bytes:
@@ -308,7 +329,14 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
     (history.root / "events").mkdir(exist_ok=True)
 
     def save_event(ev):
-        """Capture the moment: the whole ocean, plus a close-up when the event has a place."""
+        """Capture the moment: the whole ocean, plus a close-up when the event has a place. A
+        failed capture (disk full, ...) is logged and skipped: the world keeps running."""
+        try:
+            capture_event(ev)
+        except Exception as e:  # noqa: BLE001 - the journal must never stop the simulation
+            print(f"event capture failed at tick {ev.tick}: {e!r}", flush=True)
+
+    def capture_event(ev):
         recorder.draw_natural()
         rgb = (np.clip(recorder.rgba.to_numpy()[:, :, :3], 0, 1) * 255).astype(np.uint8)
         stem = f"{ev.tick:010d}_{ev.kind}"
@@ -361,6 +389,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
             mean = g[m][:, [ETA_H2, ETA_PHOTO_OX, ETA_PHOTO_AN, ETA_PRED]].mean(axis=0)
             # densest block, not the mean: a species spread over several vents averages to water
             species[int(sid)] = (float(n[m].sum()), densest(m), names[int(np.argmax(mean))])
+        taxis_food, taxis_control, tuned = chemotaxis_bias(g, n)  # cell-weighted, as taxis_check
         summary = Summary(
             tick=sim.tick, cells=float(n.sum()), slots=int(alive.sum()), lit_slots=lit,
             o2=float(w.atm[ATM_O]), ch4=float(w.atm[ATM_M]), co2=float(w.atm[ATM_C]),
@@ -368,13 +397,13 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
             pred_frac=float(((g[:, ETA_PRED] > 0.2) & (act[:, 2] > 0.5)).mean()),  # hunting now
             colony_frac=float(a.colonies()[alive].mean()),
             swim_frac=float(((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)).mean()),
-            sense_frac=max(chemotaxis_bias(g), 0.0),
+            sense_frac=max(taxis_food - taxis_control, 0.0),
             species=species,
             places={"bloom": densest(lit_mask),
                     "predation": densest((g[:, ETA_PRED] > 0.2) & (act[:, 2] > 0.5)),
                     "colony": densest(a.colonies()[alive]),
                     "swimming": densest((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)),
-                    "chemotaxis": densest((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3))})
+                    "chemotaxis": densest(tuned)})
         for ev in detector.update(summary):
             save_event(ev)
 

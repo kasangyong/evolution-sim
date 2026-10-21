@@ -34,7 +34,7 @@ class Summary:
     pred_frac: float
     colony_frac: float
     swim_frac: float
-    sense_frac: float
+    sense_frac: float  # food-sense tumble bias minus the largest control-sense bias
     # species: id -> (cells, (x, y) centre of its slots, main metabolism in Korean)
     species: dict = field(default_factory=dict)
     # where to look for an event kind (densest block of the cells involved), if known
@@ -49,9 +49,10 @@ ABILITIES = (  # (summary field, kind, threshold, re-arm below, Korean name, wha
     ("swim_frac", "swimming", 0.10, 0.03, "능동 헤엄",
      "스스로 헤엄치는 계통이 생물의 10%를 넘었습니다"),
     ("sense_frac", "chemotaxis", 0.10, 0.03, "화학 감각(주화성)",
-     ("자기 먹이(화학합성은 수소, 광합성은 빛)가 줄면 방향을 바꾸도록 연결된 헤엄치는 세포가 "
-      "반대로 연결된 세포보다 생물의 10%p 이상 많아졌습니다. 돌연변이 표류는 양쪽이 비슷하므로, "
-      "이 쏠림은 선택의 흔적입니다")),
+     ("자기 먹이(화학합성은 수소, 광합성은 빛)가 줄면 방향을 바꾸는 헤엄 세포의 쏠림이, 먹이와 "
+      "상관없는 다른 감각의 쏠림보다 생물의 10%p 이상 커졌습니다. 한 계통이 퍼지면 모든 감각의 "
+      "배선이 함께 따라오므로 한 번의 쏠림만으로 선택이라고 단정할 수는 없습니다. 선택의 후보이고, "
+      "여러 실행에서 먹이 감각만 일관되게 쏠리는지로 확인합니다")),
 )
 
 

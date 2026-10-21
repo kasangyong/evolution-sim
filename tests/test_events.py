@@ -62,20 +62,38 @@ def test_a_flickering_species_is_not_news():
     assert kinds(d, replace(BASE, tick=4000)) == []  # gone again: never announced, no news
 
 
-def test_chemotaxis_bias_ignores_drift_and_sees_selection():
+def test_chemotaxis_bias_ignores_drift_and_sweeps_and_sees_selection():
     import numpy as np
 
     from evo.life.genome import BRAIN, ETA_H2, FOUNDER, N_HID, N_IN, SPEED
     from evo.ui.web import chemotaxis_bias
 
-    def cell(sign):  # chemosynthesizer: one hidden unit links the H2 sense to the tumble output
+    def cell(sign, other=0.0):  # chemosynthesizer: hidden unit 0 links senses to the tumble output
         g = np.array(FOUNDER, np.float32)
         g[SPEED], g[ETA_H2] = 0.5, 0.9
         g[BRAIN + N_IN * 0 + 8] = 2.0  # W1[0, H2 sense]
+        g[BRAIN + N_IN * 0 + 9] = other  # W1[0, sulfide sense]: no food value for this cell
         g[BRAIN + N_IN * N_HID + N_HID + 0] = 2.0 * sign  # W2[tumble, 0]
         return g
 
-    drift = np.stack([cell(+1)] * 50 + [cell(-1)] * 50)  # both directions alike
-    assert chemotaxis_bias(drift) == 0.0
-    selected = np.stack([cell(-1)] * 80 + [cell(+1)] * 20)  # tumble when H2 falls
-    assert chemotaxis_bias(selected) == pytest.approx(0.6)
+    food, control, _ = chemotaxis_bias(np.stack([cell(+1)] * 50 + [cell(-1)] * 50))
+    assert food == 0.0 and control == 0.0  # drift: both directions alike
+    food, control, tuned = chemotaxis_bias(np.stack([cell(-1)] * 80 + [cell(+1)] * 20))
+    assert food == pytest.approx(0.6) and control == 0.0  # tumble when H2 falls: selection
+    assert tuned.sum() == 80
+    # one lineage swept with the same wiring on a sense that does not feed it: no evidence
+    food, control, _ = chemotaxis_bias(np.stack([cell(-1, other=2.0)] * 100))
+    assert food == pytest.approx(1.0) and control == pytest.approx(1.0)
+
+
+def test_chemotaxis_bias_uses_the_real_threshold():
+    import numpy as np
+
+    from evo.life.genome import BRAIN, ETA_H2, FOUNDER, N_HID, N_IN, SPEED
+    from evo.ui.web import chemotaxis_bias
+
+    g = np.array(FOUNDER, np.float32)
+    g[SPEED], g[ETA_H2] = 0.5, 0.9
+    g[BRAIN + N_IN * 0 + 8] = 2.0
+    g[BRAIN + N_IN * N_HID + N_HID + 0] = -0.3  # wired the right way but too weak to tumble
+    assert chemotaxis_bias(g[None])[0] == 0.0
