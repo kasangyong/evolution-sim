@@ -30,6 +30,7 @@ from evo.life.genome import (
     SPEED,
     T_OPT,
     T_WIDTH,
+    TRAIT_GENES,
 )
 from evo.world.fields import CHEM_DTYPE, World
 from evo.world.reactions import REACTIONS, delta_g
@@ -118,6 +119,14 @@ class Agents:
         self.adapt = ti.Vector.field(N_SENSE, ti.f32, shape=cap)
         self.heading = ti.field(ti.f32, shape=cap)
         self.brain_cost = ti.field(ti.f32, shape=cap)  # Σ|weight|, charged in metabolize
+        # stage 7b: the organism a slot is a segment of (-1: none), its place from the head, and
+        # the share of its cells that are metabolic tissue (1 for free cells and colonies)
+        self.org = ti.field(ti.i32, shape=cap)
+        self.seg = ti.field(ti.i32, shape=cap)
+        self.metab_frac = ti.field(ti.f32, shape=cap)
+        self.gen = ti.field(ti.i32, shape=cap)  # organism generations: +1 per released germ cell
+        self.trait_idx = ti.field(ti.i32, shape=len(TRAIT_GENES))
+        self.trait_idx.from_numpy(np.array(TRAIT_GENES, np.int32))
         self.adapt.fill(ADAPT_UNSET)
         self.top = ti.field(ti.i32, shape=())
         self.next_uid = ti.field(ti.i64, shape=())
@@ -129,6 +138,9 @@ class Agents:
         self.gene_lo.from_numpy(np.array([r[0] for r in GENE_RANGE], np.float32))
         self.gene_hi.from_numpy(np.array([r[1] for r in GENE_RANGE], np.float32))
         self._place_founders(np.random.default_rng(seed))
+        from evo.life.organisms import Organisms  # needs this module's constants
+
+        self.orgs = Organisms(self)
 
     def _place_founders(self, rng: np.random.Generator):
         cfg, w = self.cfg, self.world
@@ -160,6 +172,9 @@ class Agents:
         self.genome.from_numpy(genome)
         self.uid.from_numpy(uid)
         self.parent.from_numpy(np.zeros(self.cap, np.int64))
+        self.org.fill(-1)
+        self.seg.fill(0)
+        self.metab_frac.fill(1.0)
         self.free.from_numpy(np.arange(self.cap - 1, -1, -1, dtype=np.int32))
         self.top[None] = self.cap - n
         self.next_uid[None] = n + 1
@@ -192,17 +207,23 @@ class Agents:
     def cell(self, i: int) -> ti.math.ivec2:
         return ti.cast(self.pos[i], ti.i32)
 
+    @ti.func
+    def flow(self, c: ti.math.ivec2) -> ti.math.vec2:
+        """Cell-centre velocity from the overturning streamfunction (cells per tick)."""
+        u = 0.5 * ((self.world.psi[c.x, c.y + 1] - self.world.psi[c.x, c.y])
+                   + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x + 1, c.y]))
+        v = -0.5 * ((self.world.psi[c.x + 1, c.y] - self.world.psi[c.x, c.y])
+                    + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x, c.y + 1]))
+        return ti.math.vec2(u, v)
+
     @ti.kernel
     def move(self):
         for i in range(self.cap):
-            if self.state[i] == ALIVE:
+            if self.state[i] == ALIVE and self.org[i] < 0:  # segments move with their organism
                 p = self.pos[i]
                 c = self.cell(i)
-                # cell-centre velocity from the overturning streamfunction (cells per tick)
-                u = 0.5 * ((self.world.psi[c.x, c.y + 1] - self.world.psi[c.x, c.y])
-                           + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x + 1, c.y]))
-                v = -0.5 * ((self.world.psi[c.x + 1, c.y] - self.world.psi[c.x, c.y])
-                            + (self.world.psi[c.x + 1, c.y + 1] - self.world.psi[c.x, c.y + 1]))
+                flow = self.flow(c)
+                u, v = flow.x, flow.y
                 # run and tumble: past the threshold the cell picks a new random heading; it swims
                 # along its heading at the brain's speed (0 .. top speed), paid as k_move × v² × body
                 if self.act[i][ACT_TUMBLE] > ACT_ON:
@@ -401,7 +422,8 @@ class Agents:
                 eta_mo = self.genome[i, ETA_MOX]
                 tol = self.genome[i, O2_TOL]
                 dt = (self.world.temp[x, y] - self.genome[i, T_OPT]) / self.genome[i, T_WIDTH]
-                f_t = ti.exp(-dt * dt)
+                # stage 7b: only the metabolic tissue of a segment feeds (1 outside organisms)
+                f_t = ti.exp(-dt * dt) * self.metab_frac[i]
 
                 # carbon fixation: H2 chemosynthesis (2H + C -> body)
                 r = self.run(RX_CHEMO, x, y,
@@ -481,6 +503,17 @@ class Agents:
 
                 e = ti.min(e, self.cfg.energy_cap * b)
                 self.age[i] += 1
+                # stage 7b: a slot of many cells (colony, segment, super-individual) does not die
+                # whole when its energy dips below zero: the starving share of its cells dies, as
+                # many as the deficit is of the reserve, and turns to detritus; the rest live on
+                if e < 0 and nc > 1.0:
+                    lost = ti.min(-e / (self.cfg.reserve_frac * self.cfg.energy_cap * b), 1.0)
+                    if (1.0 - lost) * nc >= 1.0:
+                        self.give(D, x, y, lost * b)
+                        b -= lost * b
+                        self.ncell[i] = ti.cast((1.0 - lost) * nc, ti.f32)
+                        nc = (1.0 - lost) * nc
+                        e = ti.cast(0.0, CHEM_DTYPE)
                 self.body[i] = b
                 self.energy[i] = ti.cast(e, ti.f32)
                 dead = e < 0 or b <= self.cfg.min_body
@@ -510,6 +543,9 @@ class Agents:
                 self.energy[i] = 0.0
                 self.ncell[i] = 0.0
                 self.want_div[i] = 0
+                self.org[i] = -1
+                self.seg[i] = 0
+                self.metab_frac[i] = 1.0
                 self.state[i] = DEAD
                 self.free[ti.atomic_add(self.top[None], 1)] = i
 
@@ -530,7 +566,7 @@ class Agents:
         free slots by how many cells they really have, not by how many slots they hold (stage 3a,
         decision 7). The others divide inside the super-individual."""
         for i in range(self.cap):
-            if self.state[i] == ALIVE and self.want_div[i] == 1:
+            if self.state[i] == ALIVE and self.want_div[i] == 1 and self.org[i] < 0:
                 self.want_div[i] = 0
                 p_slot = (self.free_at_start[None] * ti.cast(self.ncell[i], ti.f64)
                           / ti.max(self.div_cells[None], 1e-12))
@@ -571,29 +607,43 @@ class Agents:
                         self.pos[j] = q
                     else:
                         self.pos[j] = self.pos[i]
-                    sigma = self.genome[i, MUT_RATE]
-                    for g in range(N_GENES):
-                        lo, hi = self.gene_lo[g], self.gene_hi[g]
-                        v = self.genome[i, g] + ti.randn() * sigma * (hi - lo)
-                        self.genome[j, g] = ti.min(ti.max(v, lo), hi)
-                    if ti.random() < self.cfg.big_mutation_p:
-                        # trait genes only, so their odds don't shrink as the brain adds genes
-                        g = ti.min(ti.cast(ti.random() * (BRAIN + 1), ti.i32), BRAIN)
-                        if g == BRAIN:
-                            g = ADHESION  # the one trait gene that sits after the brain
-                        self.genome[j, g] = self.gene_lo[g] + ti.random() * (
-                            self.gene_hi[g] - self.gene_lo[g])
+                    self.org[j] = -1
+                    self.seg[j] = 0
+                    self.metab_frac[j] = 1.0
+                    self.gen[j] = self.gen[i]
+                    self.mutate(i, j)
                     self.state[j] = ALIVE
+
+    @ti.func
+    def mutate(self, i: int, j: int):
+        """Daughter j's genome: parent i's with Gaussian noise scaled by each gene's range, and
+        rarely one trait gene redrawn (trait genes only, so their odds don't shrink as the brain
+        adds genes)."""
+        sigma = self.genome[i, MUT_RATE]
+        for g in range(N_GENES):
+            lo, hi = self.gene_lo[g], self.gene_hi[g]
+            v = self.genome[i, g] + ti.randn() * sigma * (hi - lo)
+            self.genome[j, g] = ti.min(ti.max(v, lo), hi)
+        if ti.random() < self.cfg.big_mutation_p:
+            n = ti.static(len(TRAIT_GENES))
+            g = self.trait_idx[ti.min(ti.cast(ti.random() * n, ti.i32), n - 1)]
+            self.genome[j, g] = self.gene_lo[g] + ti.random() * (self.gene_hi[g] - self.gene_lo[g])
 
     def step(self):
         self.move()
+        self.orgs.swim()
         self.census()
         self.think()
         self.predate()
+        self.orgs.share_energy()
         self.metabolize()
         self.die()
         self.weigh_divisions()
+        self.orgs.develop()
         self.reproduce()
+        self.orgs.integrity()
+        self.orgs.transition()
+        self.orgs.tissue()
 
     def snapshot(self) -> dict:
         alive = self.state.to_numpy() == ALIVE

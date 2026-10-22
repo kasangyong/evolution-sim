@@ -296,7 +296,39 @@ def life_summary(sim: Sim) -> dict:
             "eta_h2": float(mean[ETA_H2]), "eta_photo_an": float(mean[ETA_PHOTO_AN]),
             "eta_photo_ox": float(mean[ETA_PHOTO_OX]), "eta_aer": float(mean[ETA_AER]),
             "t_opt": float(mean[T_OPT]), "eta_pred": float(mean[ETA_PRED]),
-            "speed": float(mean[SPEED]), "biomass": float(a.body.to_numpy()[alive].sum())}
+            "speed": float(mean[SPEED]), "biomass": float(a.body.to_numpy()[alive].sum()),
+            **organism_summary(a)}
+
+
+SWUM = 3.0  # an organism that has swum this many body lengths counts as a swimmer
+
+
+def organism_events(a) -> dict:
+    """Event-journal fields for organisms, with where to look (the longest body, the best swimmer)."""
+    t = a.orgs.table()
+    if not len(t["id"]):
+        return {}
+    length = t["n"] * a.cfg.seg_len
+    swum = t["travel"] > SWUM * np.maximum(length, a.cfg.seg_len)
+    places = {"organism": tuple(map(float, t["head"][int(np.argmax(t["n"]))]))}
+    if swum.any():
+        places["org_swim"] = tuple(map(float, t["head"][int(np.argmax(t["travel"]))]))
+    return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
+            "org_swimmers": int(swum.sum()), "places_org": places}
+
+
+ORG_LIST = 30  # organisms sent to the viewer (longest bodies first), for the follow camera
+
+
+def organism_summary(a) -> dict:
+    """Stage 7b: how many multicellular organisms, the longest body, and the biggest few."""
+    t = a.orgs.table()
+    if not len(t["id"]):
+        return {"orgs": 0, "org_seg_max": 0, "org_list": []}
+    order = np.lexsort((-t["travel"], -t["n"]))[:ORG_LIST]
+    return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
+            "org_list": [[int(t["id"][k]), int(t["n"][k]), float(t["head"][k, 0]),
+                          float(t["head"][k, 1]), float(t["travel"][k])] for k in order]}
 
 
 def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, budget_gb: float = 20.0):
@@ -390,6 +422,8 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
             # densest block, not the mean: a species spread over several vents averages to water
             species[int(sid)] = (float(n[m].sum()), densest(m), names[int(np.argmax(mean))])
         taxis_food, taxis_control, tuned = chemotaxis_bias(g, n)  # cell-weighted, as taxis_check
+        org_ev = organism_events(a)
+        org_places = org_ev.pop("places_org", {})
         summary = Summary(
             tick=sim.tick, cells=float(n.sum()), slots=int(alive.sum()), lit_slots=lit,
             o2=float(w.atm[ATM_O]), ch4=float(w.atm[ATM_M]), co2=float(w.atm[ATM_C]),
@@ -399,11 +433,12 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
             swim_frac=float(((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)).mean()),
             sense_frac=max(taxis_food - taxis_control, 0.0),
             species=species,
+            **org_ev,
             places={"bloom": densest(lit_mask),
                     "predation": densest((g[:, ETA_PRED] > 0.2) & (act[:, 2] > 0.5)),
                     "colony": densest(a.colonies()[alive]),
                     "swimming": densest((g[:, SPEED] > 0.1) & (act[:, 1] > 0.3)),
-                    "chemotaxis": densest(tuned)})
+                    "chemotaxis": densest(tuned), **org_places})
         for ev in detector.update(summary):
             save_event(ev)
 

@@ -8,12 +8,12 @@ import json
 
 import numpy as np
 
-from evo.life.genome import GENE_RANGE, TRAIT_GENES
+from evo.life.genome import GENE_RANGE, SPECIES_GENES
 
 HISTORY_POINTS = 256  # per species; halved (every other point) when exceeded
-_IDX = np.array(TRAIT_GENES)
-_LO = np.array([GENE_RANGE[g][0] for g in TRAIT_GENES], np.float32)
-_SPAN = np.array([GENE_RANGE[g][1] - GENE_RANGE[g][0] for g in TRAIT_GENES], np.float32)
+_IDX = np.array(SPECIES_GENES)
+_LO = np.array([GENE_RANGE[g][0] for g in SPECIES_GENES], np.float32)
+_SPAN = np.array([GENE_RANGE[g][1] - GENE_RANGE[g][0] for g in SPECIES_GENES], np.float32)
 
 
 def traits(genomes: np.ndarray) -> np.ndarray:

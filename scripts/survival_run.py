@@ -24,16 +24,23 @@ for path, val in opts.items():
         setattr(getattr(cfg, sect), key, type(getattr(getattr(cfg, sect), key))(val))
 sim = Sim(cfg)
 t, worst, min_pop, first_photo = time.perf_counter(), 0.0, None, None
+first_org, max_orgs, max_seg, max_swum = None, 0, 0, 0.0  # stage 7b
 while sim.tick < ticks and sim.life.count() > 0:
     sim.step(1000)
     pop = sim.life.count()
-    min_pop = pop if min_pop is None else min(min_pop, pop)
+    if min_pop is None or pop < min_pop:  # the bottleneck, with its cells (super-individuals)
+        min_pop, min_cells = pop, sim.life.cells()
     worst = max(worst, sim.budget_error().worst())
     alive = sim.life.state.to_numpy() == ALIVE
     pos = sim.life.pos.to_numpy()[alive].astype(int)
     photic = int((sim.world.light.to_numpy()[pos[:, 0], pos[:, 1]] > 0.01).sum())
     if first_photo is None and photic > 1000:
         first_photo = sim.tick  # first checkpoint with > 1000 cells living in light
+    orgs = sim.life.orgs.table()
+    if len(orgs["id"]):
+        first_org = sim.tick if first_org is None else first_org
+        max_orgs, max_seg = max(max_orgs, len(orgs["id"])), max(max_seg, int(orgs["n"].max()))
+        max_swum = max(max_swum, float(orgs["travel"].max()))
 snap = sim.life.snapshot()
 if "save" in opts:
     alive = sim.life.state.to_numpy() == ALIVE
@@ -50,6 +57,7 @@ photo = (f"photo_an max {g[:, ETA_PHOTO_AN].max():.2f} photo_ox max {g[:, ETA_PH
 o2 = sim.world.chem.to_numpy()[O].sum() + sim.world.atm[ATM_O]
 body = snap["body"].mean() if len(snap["body"]) else 0.0
 print(f"seed {seed:>2} {status:<14} pop {sim.life.count():>6} min_pop {min_pop:>6} "
-      f"worst_err {worst:.1e} {time.perf_counter() - t:.0f}s | photic {photic} first_photo "
+      f"min_cells {min_cells:.3g} worst_err {worst:.1e} {time.perf_counter() - t:.0f}s | photic {photic} first_photo "
       f"{first_photo} dark {sim.life.count() - photic} cells {sim.life.cells():.3g} body {body:.3f} {photo} O2 {o2:.3g} | "
-      f"{genes}", flush=True)
+      f"{genes} | orgs {sim.life.orgs.count()} first_org {first_org} max_orgs {max_orgs} "
+      f"max_seg {max_seg} max_swum {max_swum:.1f}", flush=True)

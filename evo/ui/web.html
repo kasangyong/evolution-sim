@@ -98,6 +98,7 @@
     </label>
     <label>보기 <select id="layer"></select></label>
     <button id="reset">바다 전체</button>
+    <button id="follow" title="가장 긴 다세포 생물체를 따라갑니다">생물체 따라가기</button>
     <div class="legend">
       <span><i style="background:#38a043"></i>산소 광합성 (엽록소)</span>
       <span><i style="background:#8c4d6b"></i>비산소 광합성 (세균엽록소)</span>
@@ -280,7 +281,9 @@ async function pollStats() {
       ["세포 수", fmt(L.cells, 0)], ["슬롯(묶음)", fmt(L.pop, 0)], ["빛 받는 슬롯", fmt(L.photic, 0)],
       ["바이오매스", fmt(L.biomass)], ["η 수소 화학합성", fmt(L.eta_h2)], ["η 비산소 광합성", fmt(L.eta_photo_an)],
       ["η 산소 광합성", fmt(L.eta_photo_ox)], ["η 포식", fmt(L.eta_pred)], ["헤엄 속도", fmt(L.speed)],
+      ["다세포 생물체", fmt(L.orgs || 0, 0) + (L.orgs ? ` (가장 긴 몸 ${L.org_seg_max}마디)` : "")],
     ]);
+    orgList = L.org_list || [];
     kv($("climkv"), [
       ["수면 온도", fmt(st.ts, 1) + " °C"], ["결빙", Math.round(st.ice * 100) + " %"],
       ["대기 O₂", fmt(st.atm.o2)], ["대기 CH₄", fmt(st.atm.ch4)], ["대기 CO₂", fmt(st.atm.co2)],
@@ -312,7 +315,7 @@ async function pollCells() {
       if (buf.byteLength >= 16) {
         const dv = new DataView(buf), tick = Number(dv.getBigInt64(0, true));
         const total = dv.getInt32(8, true), n = dv.getInt32(12, true);
-        const NF = 15, f = new Float32Array(buf, 16, n * NF), map = new Map();
+        const NF = 17, f = new Float32Array(buf, 16, n * NF), map = new Map();
         for (let i = 0; i < n; i++) map.set(f[i * NF + 7], f.subarray(i * NF, i * NF + NF));
         const last = snaps[snaps.length - 1];
         if (!last || last.tick !== tick) { snaps.push({t: performance.now(), tick, map, total, n}); if (snaps.length > 2) snaps.shift(); }
@@ -324,7 +327,24 @@ async function pollCells() {
 
 // ---- drawing ----
 function rgb(r, g, b, a) { return `rgba(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0},${a})`; }
+// follow camera (stage 7b): keep the longest organism in the middle of a close-up
+let orgList = [], following = null;
+$("follow").onclick = () => {
+  if (following !== null) { following = null; $("follow").textContent = "생물체 따라가기"; return; }
+  if (!orgList.length) { $("follow").textContent = "아직 다세포 생물체가 없습니다"; setTimeout(() => $("follow").textContent = "생물체 따라가기", 2000); return; }
+  following = orgList[0][0]; $("follow").textContent = "따라가기 멈춤";
+  cam.w = 24;
+};
+function followCam() {
+  if (following === null || mode !== "live") return;
+  let o = orgList.find(r => r[0] === following);
+  if (!o && orgList.length) { o = orgList[0]; following = o[0]; }  // it died: take the next longest
+  if (!o) return;
+  const h = camH(), nx = o[2] - cam.w / 2, ny = o[3] - h / 2;
+  if (Math.hypot(nx - cam.x, ny - cam.y) > 0.5) { cam.x += (nx - cam.x) * 0.1; cam.y += (ny - cam.y) * 0.1; clampCam(); sendView(); }
+}
 function draw() {
+  followCam();
   const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -372,6 +392,25 @@ function draw() {
       if (n > 1 && r > 5) { ctx.fillStyle = "rgba(230,240,245,.85)"; ctx.font = "11px system-ui"; ctx.fillText("×" + fmt(n, 0), px + r + 2, py - r); }
       if (hover && Math.hypot(hover.px - px, hover.py - py) < Math.max(r, 4)) found = row;
     };
+    // multicellular organisms (stage 7b): segments joined head to tail, as the simulation links them
+    const bodies = new Map();
+    for (const [uid, row] of cur.map) if (row[15] > 0) {
+      const p = prev && prev.map.get(uid), x = p ? lerp(p[0], row[0], a) : row[0], y = p ? lerp(p[1], row[1], a) : row[1];
+      if (!bodies.has(row[15])) bodies.set(row[15], []);
+      bodies.get(row[15]).push([row[16], x, y, row]);
+    }
+    for (const segs of bodies.values()) {
+      segs.sort((p, q) => p[0] - q[0]);
+      for (let k = 1; k < segs.length; k++) {
+        const [, x0, y0, r0] = segs[k - 1], [, x1, y1, r1] = segs[k];
+        const w = Math.max(R0 * Math.cbrt(r1[2] * r1[3] / 0.02) * 0.9, 2);
+        ctx.strokeStyle = rgb(r1[4] * .8, r1[5] * .8, r1[6] * .8, 0.9); ctx.lineWidth = w; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo((x0 - cam.x) * sx, (y0 - cam.y) * sy); ctx.lineTo((x1 - cam.x) * sx, (y1 - cam.y) * sy); ctx.stroke();
+      }
+      const [, hx, hy, hr] = segs[0];  // head: the segment that leads
+      ctx.strokeStyle = "rgba(240,245,250,.9)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc((hx - cam.x) * sx, (hy - cam.y) * sy, Math.max(R0 * Math.cbrt(hr[2] * hr[3] / 0.02), 3), 0, Math.PI * 2); ctx.stroke();
+    }
     for (const [uid, row] of cur.map) {
       const p = prev && prev.map.get(uid);
       if (p) drawCell(lerp(p[0], row[0], a), lerp(p[1], row[1], a), row, 1, 1);
@@ -389,7 +428,7 @@ function draw() {
   const tip = $("tip");
   if (found && hover) {
     tip.hidden = false;
-    tip.innerHTML = `${KIND[found[9] | 0]} · 종 #${found[12] | 0}${found[14] ? " · 군체" : ""}<br>세포 크기 ${fmt(found[2], 4)} · 세포 ${fmt(found[3], 0)}개<br>헤엄 ${fmt(Math.hypot(found[10], found[11]), 2)} 칸/tick · 깊이 ${found[1] | 0}칸`;
+    tip.innerHTML = `${KIND[found[9] | 0]} · 종 #${found[12] | 0}${found[15] ? ` · 다세포 생물체 #${found[15] - 1}의 ${(found[16] | 0) + 1}번째 마디` : found[14] ? " · 군체" : ""}<br>세포 크기 ${fmt(found[2], 4)} · 세포 ${fmt(found[3], 0)}개<br>헤엄 ${fmt(Math.hypot(found[10], found[11]), 2)} 칸/tick · 깊이 ${found[1] | 0}칸`;
     tip.style.left = Math.min(hover.px + 14, W - 200) + "px"; tip.style.top = (hover.py + 14) + "px";
   } else tip.hidden = true;
   requestAnimationFrame(draw);

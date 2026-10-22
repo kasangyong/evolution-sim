@@ -19,7 +19,7 @@ LIGHT_LAYER, TEMP_LAYER, NATURAL_LAYER = 8, 9, 10
 
 # cell record for the zoom view, one row of f32 per cell (stage 4b, design decision 3)
 CELL_FIELDS = ("x", "y", "size", "ncell", "r", "g", "b", "uid", "parent", "kind", "vx", "vy",
-               "species", "event", "colony")
+               "species", "event", "colony", "org", "seg")  # org: organism id + 1 (0: none)
 N_CELL_FIELDS = len(CELL_FIELDS)
 KIND_CHEMO, KIND_PHOTO_AN, KIND_PHOTO_OX, KIND_PRED = 0, 1, 2, 3
 UID_MOD = 16777216  # uid kept in records modulo 2^24 (exact in f32)
@@ -190,7 +190,9 @@ class Renderer:
         for i in range(self.agents.cap):
             if self.agents.state[i] == ALIVE:
                 p = self.agents.pos[i]
-                if x0 <= p.x < x1 and y0 <= p.y < y1 and uid_hash(self.agents.uid[i]) * n_in < limit:
+                # organism segments always: a sampled body would fall apart on screen
+                if x0 <= p.x < x1 and y0 <= p.y < y1 and (
+                        self.agents.org[i] >= 0 or uid_hash(self.agents.uid[i]) * n_in < limit):
                     k = ti.atomic_add(self.n_cells[None], 1)
                     if k < self.max_cells:
                         n = self.agents.ncell[i]
@@ -206,7 +208,9 @@ class Renderer:
                             ti.cast(self.kind(i), ti.f32), sp * ti.cos(hd), sp * ti.sin(hd),
                             ti.cast(self.agents.species[i], ti.f32),
                             ti.cast(self.agents.event[i], ti.f32),
-                            ti.cast(self.agents.is_colony(i), ti.f32)])
+                            ti.cast(self.agents.is_colony(i), ti.f32),
+                            ti.cast(self.agents.org[i] + 1, ti.f32),
+                            ti.cast(self.agents.seg[i], ti.f32)])
                         for f in ti.static(range(N_CELL_FIELDS)):
                             self.cells[k, f] = row[f]
 

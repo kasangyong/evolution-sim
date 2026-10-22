@@ -97,3 +97,15 @@ def test_chemotaxis_bias_uses_the_real_threshold():
     g[BRAIN + N_IN * 0 + 8] = 2.0
     g[BRAIN + N_IN * N_HID + N_HID + 0] = -0.3  # wired the right way but too weak to tumble
     assert chemotaxis_bias(g[None])[0] == 0.0
+
+
+def test_organism_events_fire_once_with_a_place():
+    d = EventDetector()
+    kinds(d, BASE)
+    got = d.update(replace(BASE, tick=2000, orgs=3, org_seg_max=5, org_swimmers=1,
+                           places={"organism": (10.0, 20.0), "org_swim": (11.0, 21.0)}))
+    by = {e.kind: e for e in got}
+    assert {"organism", "body", "org_swim"} <= set(by) and by["org_swim"].where == (11.0, 21.0)
+    assert not {"organism", "body", "org_swim"} & set(kinds(d, replace(BASE, tick=4000, orgs=3,
+                                                                      org_seg_max=5,
+                                                                      org_swimmers=1)))

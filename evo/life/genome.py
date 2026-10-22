@@ -1,4 +1,4 @@
-"""Genome layout (§3, stage-7a; new genes are appended so indices stay stable). Genes
+"""Genome layout (§3, stage 7b; new genes are appended so indices stay stable). Genes
 are stored directly in trait units and clamped to their range after mutation; mutation noise
 is scaled by each trait's range."""
 
@@ -13,9 +13,20 @@ N_BRAIN = N_HID * N_IN + N_HID + N_OUT * N_HID
 ADHESION = BRAIN + N_BRAIN
 # stage 7a: how many ticks the senses average over before comparing (adaptation time)
 ADAPT_TAU = ADHESION + 1
-N_GENES = ADAPT_TAU + 1
+# stage 7b: multicellular bodies (stage7b-arch.md, 7b 구현 결정). A colony with DIFF ≥ 0.5 becomes an
+# organism; it grows N_SEG segments of SEG_CELLS cells. Tissue shares along the body axis s (head 0,
+# tail 1) are softmax(metabolism 0, muscle a+b·s, cilia a+b·s, germ a+b·s), like Hox patterning.
+# Muscles bend each joint by A·sin(2π·f·t − lag·k) (myogenic rhythm, until nerves in 7c)
+DIFF = ADAPT_TAU + 1
+N_SEG, SEG_CELLS = DIFF + 1, DIFF + 2
+TISSUE = DIFF + 3  # 6 genes: (a, b) for muscle, cilia, germ
+CPG_AMP, CPG_FREQ, CPG_LAG = TISSUE + 6, TISSUE + 7, TISSUE + 8
+N_GENES = CPG_LAG + 1
 # genes that describe the organism (not the brain): species distance, big mutations
-TRAIT_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU)
+TRAIT_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU) + tuple(range(DIFF, N_GENES))
+# species distance: the stage-7a traits. Body-plan genes act only once a lineage differentiates; in
+# single cells they drift freely and would dilute the distance (threshold calibrated on these 22)
+SPECIES_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU)
 ETA_GENES = (ETA_H2, ETA_METH, ETA_ANAER, ETA_PHOTO_AN, ETA_PHOTO_OX, ETA_AER, ETA_SFIX, ETA_SOX,
              ETA_MOX)
 
@@ -44,15 +55,25 @@ GENE_RANGE = [
 ] + [(-4.0, 4.0)] * N_BRAIN + [
     (0.0, 1.0),  # adhesion: chance that a daughter stays bound in the colony
     (1.0, 20.0),  # adaptation time of the senses (ticks)
+    (0.0, 1.0),  # differentiation: a colony at ≥ 0.5 develops into a multicellular organism
+    (1.0, 12.0),  # segments the body grows to
+    (4.0, 256.0),  # cells per segment before the next segment buds off the tail
+] + [(-4.0, 4.0)] * 6 + [
+    (0.0, 1.2),  # muscle bend amplitude (radians per joint)
+    (0.0, 0.25),  # muscle rhythm (cycles per tick)
+    (-3.1416, 3.1416),  # phase lag per segment (> 0: bending wave runs head to tail)
 ]
 GENE_NAMES = ["div_size", "eta_h2", "eta_meth", "eta_anaer", "t_opt", "t_width", "mut_rate",
               "col_r", "col_g", "col_b", "eta_photo_an", "eta_photo_ox", "eta_aer", "eta_sfix",
               "eta_sox", "eta_mox", "o2_tol", "eta_pred", "speed", "prey_ratio"] + [
-    f"brain{k}" for k in range(N_BRAIN)] + ["adhesion", "adapt_tau"]
+    f"brain{k}" for k in range(N_BRAIN)] + ["adhesion", "adapt_tau", "diff", "n_seg", "seg_cells",
+                                         "muscle_a", "muscle_b", "cilia_a", "cilia_b", "germ_a",
+                                         "germ_b", "cpg_amp", "cpg_freq", "cpg_lag"]
 
 # B-plan founder (§3): H2 chemosynthesis + methanogenesis only
 # zero brain: no movement, no predation, no division inhibition (stage-3a behaviour)
 FOUNDER = [0.02, 0.5, 0.3, 0.0, 30.0, 20.0, 0.02, 0.85, 0.35, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-           0.0, 0.0, 0.0, 2.0] + [0.0] * N_BRAIN + [0.0, 5.0]
+           0.0, 0.0, 0.0, 2.0] + [0.0] * N_BRAIN + [0.0, 5.0] + [
+    0.0, 4.0, 32.0] + [0.0] * 6 + [0.3, 0.05, 0.5]  # no differentiation: a single-celled founder
 
 assert len(GENE_RANGE) == len(GENE_NAMES) == len(FOUNDER) == N_GENES

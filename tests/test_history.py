@@ -31,7 +31,7 @@ def test_config_json_round_trip():
 
 def test_cell_packing_keeps_what_the_viewer_draws():
     rng = np.random.default_rng(0)
-    rows = np.zeros((50, 15), np.float32)
+    rows = np.zeros((50, 17), np.float32)
     rows[:, 0], rows[:, 1] = rng.uniform(0, 1024, 50), rng.uniform(0, 384, 50)
     rows[:, 2], rows[:, 3] = rng.uniform(0.005, 0.2, 50), rng.integers(1, 1000, 50)
     rows[:, 4:7] = rng.uniform(0, 1, (50, 3))
@@ -39,15 +39,17 @@ def test_cell_packing_keeps_what_the_viewer_draws():
     rows[:, 9], rows[:, 10:12] = rng.integers(0, 4, 50), rng.uniform(-1, 1, (50, 2))
     rows[:, 12], rows[:, 13] = rng.integers(0, 500, 50), rng.integers(0, 4, 50)
     rows[:, 14] = rng.integers(0, 2, 50)
+    rows[:, 15], rows[:, 16] = rng.integers(0, 8193, 50), rng.integers(0, 12, 50)
     back = unpack_cells(pack_cells(rows))
     assert np.allclose(back[:, :2], rows[:, :2], atol=1 / 64)
     assert np.allclose(back[:, 2], rows[:, 2], rtol=1e-3)
-    assert np.array_equal(back[:, [3, 7, 8, 9, 12, 13, 14]], rows[:, [3, 7, 8, 9, 12, 13, 14]])
+    exact = [3, 7, 8, 9, 12, 13, 14, 15, 16]
+    assert np.array_equal(back[:, exact], rows[:, exact])
     assert np.allclose(back[:, 4:7], rows[:, 4:7], atol=1 / 255)
 
 
 def _fake_frame(h: History, tick: int):
-    h.record_frame(tick, np.zeros((4, 4, 3), np.uint8), np.zeros((3, 15), np.float32), {"tick": tick})
+    h.record_frame(tick, np.zeros((4, 4, 3), np.uint8), np.zeros((3, 17), np.float32), {"tick": tick})
 
 
 def test_branch_lineage_excludes_what_came_after_the_fork(tmp_path):
@@ -154,3 +156,24 @@ def test_frame_spacing_follows_writer_load(tmp_path):
         h.adapt(1.0)
     assert h.frame_spacing == 64 * h.frame_every  # capped
 
+
+
+def test_a_stage_7a_snapshot_runs_on_with_bodies_possible(small_cfg):
+    from evo.life.genome import DIFF, FOUNDER, N_GENES
+
+    sim = Sim(small_cfg)
+    sim.step(100)
+    old = capture(sim)
+    # what a schema-3 file held: no body-plan genes, no organism fields
+    old["life.genome"] = old["life.genome"][:, :DIFF]
+    for k in [k for k in old if k.startswith("org.") or k in ("life.org", "life.seg",
+                                                               "life.metab_frac", "life.gen")]:
+        del old[k]
+    old["schema_version"] = np.array(3, np.int64)
+    sim2 = Sim(small_cfg)
+    restore(sim2, old)
+    g = sim2.life.genome.to_numpy()
+    assert g.shape[1] == N_GENES and (g[:, DIFF:] == np.array(FOUNDER[DIFF:], np.float32)).all()
+    assert (sim2.life.org.to_numpy() == -1).all() and sim2.life.orgs.count() == 0
+    sim2.step(50)
+    assert sim2.budget_error().worst() < 1e-9

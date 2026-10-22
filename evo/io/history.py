@@ -22,14 +22,14 @@ from evo.io.snapshot import SCHEMA_VERSION, config_to_json
 CELL_DTYPE = np.dtype([("x", "<u2"), ("y", "<u2"), ("size", "<f2"), ("ncell", "<f4"),
                        ("rgb", "u1", 3), ("uid", "<u4"), ("parent", "<u4"), ("kind", "u1"),
                        ("vx", "<f2"), ("vy", "<f2"), ("species", "<u4"), ("event", "u1"),
-                       ("colony", "u1")])
+                       ("colony", "u1"), ("org", "<u2"), ("seg", "u1")])
 POS_SCALE = 64.0  # positions stored as u16 in 1/64 grid cells
 BUSY_HIGH, BUSY_LOW, ADAPT_WINDOW = 0.7, 0.3, 60.0  # writer load bounds, window in seconds
 SHARE = {"frame": 0.6, "snap": 0.4}  # budget split, so big snapshots cannot starve frames
 
 
 def pack_cells(rows: np.ndarray) -> np.ndarray:
-    """Renderer rows (n, 15) f32 -> compact structured array (32 bytes per cell)."""
+    """Renderer rows (n, 17) f32 -> compact structured array (35 bytes per cell)."""
     out = np.zeros(len(rows), CELL_DTYPE)
     out["x"] = np.clip(rows[:, 0] * POS_SCALE, 0, 65535)
     out["y"] = np.clip(rows[:, 1] * POS_SCALE, 0, 65535)
@@ -38,12 +38,13 @@ def pack_cells(rows: np.ndarray) -> np.ndarray:
     out["uid"], out["parent"], out["kind"] = rows[:, 7], rows[:, 8], rows[:, 9]
     out["vx"], out["vy"], out["species"] = rows[:, 10], rows[:, 11], rows[:, 12]
     out["event"], out["colony"] = rows[:, 13], rows[:, 14]
+    out["org"], out["seg"] = rows[:, 15], rows[:, 16]
     return out
 
 
 def unpack_cells(packed: np.ndarray) -> np.ndarray:
-    """Inverse of pack_cells, back to renderer rows (n, 15) f32 for the browser."""
-    rows = np.zeros((len(packed), 15), np.float32)
+    """Inverse of pack_cells, back to renderer rows (n, 17) f32 for the browser."""
+    rows = np.zeros((len(packed), 17), np.float32)
     rows[:, 0] = packed["x"] / POS_SCALE
     rows[:, 1] = packed["y"] / POS_SCALE
     rows[:, 2], rows[:, 3] = packed["size"], packed["ncell"]
@@ -51,6 +52,7 @@ def unpack_cells(packed: np.ndarray) -> np.ndarray:
     rows[:, 7], rows[:, 8], rows[:, 9] = packed["uid"], packed["parent"], packed["kind"]
     rows[:, 10], rows[:, 11], rows[:, 12] = packed["vx"], packed["vy"], packed["species"]
     rows[:, 13], rows[:, 14] = packed["event"], packed["colony"]
+    rows[:, 15], rows[:, 16] = packed["org"], packed["seg"]
     return rows
 
 

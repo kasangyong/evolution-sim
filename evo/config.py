@@ -125,6 +125,16 @@ class LifeConfig:
     k_move: float = 0.01  # energy per unit body per (cell/tick)² of active movement
     # stage 7a: nerves and receptors cost energy in proportion to the connection strengths
     k_brain: float = 3.0e-5  # per unit body per unit Σ|weight| (≈1% of maintenance per weight)
+    # stage 7b: multicellular organisms (stage7b-arch.md, 7b 구현 결정)
+    org_capacity: int = 8192  # organism records; each segment is one slot of the pool above
+    org_min_cells: float = 16.0  # a differentiating colony this big becomes an organism
+    seg_len: float = 0.5  # segment length (grid cells)
+    drag_t: float = 1.0  # resistive force per unit velocity along a segment
+    drag_n: float = 2.0  # ... and across it (slender body: about twice the tangential)
+    k_cilia: float = 0.02  # ciliary thrust per segment at full cilia share
+    k_work: float = 0.01  # energy per unit body per unit dissipated swimming power
+    turn_ticks: int = 10  # a turn bends the body to one side this long
+    turn_bend: float = 0.4  # extra bend per muscle joint during a turn (radians)
 
 
 @dataclass

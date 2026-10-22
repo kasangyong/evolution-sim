@@ -39,6 +39,10 @@ class Summary:
     species: dict = field(default_factory=dict)
     # where to look for an event kind (densest block of the cells involved), if known
     places: dict = field(default_factory=dict)
+    # stage 7b: multicellular organisms, the longest body (segments), organisms that have swum
+    orgs: int = 0
+    org_seg_max: int = 0
+    org_swimmers: int = 0
 
 
 ABILITIES = (  # (summary field, kind, threshold, re-arm below, Korean name, what it means)
@@ -120,6 +124,21 @@ class EventDetector:
             if self._fire(kind, frac >= on, frac < off):
                 ev.append(Event(s.tick, kind, f"새 능력 확산: {name}",
                                 f"{what}(지금 {frac:.0%}).", nums, s.places.get(kind)))
+
+        if self._fire("organism", s.orgs > 0, s.orgs == 0):
+            ev.append(Event(s.tick, "organism", "다세포 생물체 출현",
+                            f"분화하는 군체가 몸을 가진 생물체가 됐습니다(지금 {s.orgs}마리). 세포가 "
+                            "대사·근육·섬모·생식 조직으로 나뉘고, 생식 조직이 내보낸 세포 하나에서 "
+                            "다음 세대가 자랍니다.", nums, s.places.get("organism")))
+        if self._fire("body", s.org_seg_max >= 4, s.org_seg_max < 2):
+            ev.append(Event(s.tick, "body", "마디 4개 이상의 몸",
+                            f"가장 긴 생물체가 {s.org_seg_max}마디가 됐습니다.", nums,
+                            s.places.get("organism")))
+        if self._fire("org_swim", s.org_swimmers > 0, s.orgs == 0):
+            ev.append(Event(s.tick, "org_swim", "생물체가 헤엄친다",
+                            f"근육이나 섬모로 스스로 몸길이의 몇 배 이상 나아간 생물체가 생겼습니다"
+                            f"({s.org_swimmers}마리, 저항력 이론으로 계산한 실제 이동).", nums,
+                            s.places.get("org_swim")))
 
         total = max(sum(c for c, _, _ in s.species.values()), 1.0)
         now_major = {sid for sid, (c, _, _) in s.species.items() if c >= 0.05 * total}
