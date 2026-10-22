@@ -124,6 +124,11 @@
       <h2>수면 온도 (°C)</h2><canvas class="chart" id="c_temp"></canvas>
     </div>
     <div class="card wide">
+      <h2>뇌 보기 · 따라가는 생물체의 신경계 (가로 = 마디, 머리가 왼쪽 · 세로 = 뉴런 유형 · 색 = 출력: 파랑 음, 빨강 양 · 선 = 시냅스: 초록 흥분, 분홍 억제)</h2>
+      <canvas id="brain" height="220"></canvas>
+      <div id="braininfo" class="note">"생물체 따라가기"를 누르면 그 생물체의 뉴런 활동이 실시간으로 보입니다. 신경이 없는 생물체는 비어 있습니다.</div>
+    </div>
+    <div class="card wide">
       <h2>사건 기록 · 시뮬레이션이 스스로 감지해 그 순간을 찍어 둔 변화 (누르면 그때 그곳으로 되감기)</h2>
       <div id="events"><span class="note">아직 감지된 사건이 없습니다. 광합성 번성, 산소 증가, 결빙, 대멸종, 새 주요 종, 새 능력 확산 등을 지켜봅니다.</span></div>
     </div>
@@ -281,7 +286,7 @@ async function pollStats() {
       ["세포 수", fmt(L.cells, 0)], ["슬롯(묶음)", fmt(L.pop, 0)], ["빛 받는 슬롯", fmt(L.photic, 0)],
       ["바이오매스", fmt(L.biomass)], ["η 수소 화학합성", fmt(L.eta_h2)], ["η 비산소 광합성", fmt(L.eta_photo_an)],
       ["η 산소 광합성", fmt(L.eta_photo_ox)], ["η 포식", fmt(L.eta_pred)], ["헤엄 속도", fmt(L.speed)],
-      ["다세포 생물체", fmt(L.orgs || 0, 0) + (L.orgs ? ` (가장 긴 몸 ${L.org_seg_max}마디)` : "")],
+      ["다세포 생물체", fmt(L.orgs || 0, 0) + (L.orgs ? ` (가장 긴 몸 ${L.org_seg_max}마디, 가장 큰 신경계 ${L.org_neurons_max}뉴런)` : "")],
     ]);
     orgList = L.org_list || [];
     kv($("climkv"), [
@@ -330,15 +335,16 @@ function rgb(r, g, b, a) { return `rgba(${r * 255 | 0},${g * 255 | 0},${b * 255 
 // follow camera (stage 7b): keep the longest organism in the middle of a close-up
 let orgList = [], following = null;
 $("follow").onclick = () => {
-  if (following !== null) { following = null; $("follow").textContent = "생물체 따라가기"; return; }
+  if (following !== null) { following = null; $("follow").textContent = "생물체 따라가기"; post({brain: null}); return; }
   if (!orgList.length) { $("follow").textContent = "아직 다세포 생물체가 없습니다"; setTimeout(() => $("follow").textContent = "생물체 따라가기", 2000); return; }
   following = orgList[0][0]; $("follow").textContent = "따라가기 멈춤";
   cam.w = 24;
+  post({brain: following});
 };
 function followCam() {
   if (following === null || mode !== "live") return;
   let o = orgList.find(r => r[0] === following);
-  if (!o && orgList.length) { o = orgList[0]; following = o[0]; }  // it died: take the next longest
+  if (!o && orgList.length) { o = orgList[0]; following = o[0]; post({brain: following}); }  // it died: the next longest
   if (!o) return;
   const h = camH(), nx = o[2] - cam.w / 2, ny = o[3] - h / 2;
   if (Math.hypot(nx - cam.x, ny - cam.y) > 0.5) { cam.x += (nx - cam.x) * 0.1; cam.y += (ny - cam.y) * 0.1; clampCam(); sendView(); }
@@ -547,7 +553,43 @@ async function pollEvents() {
   } catch (e) { /* offline */ }
   setTimeout(pollEvents, 3000);
 }
-pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); pollEvents(); requestAnimationFrame(draw);
+// stage 7c: the followed organism's nervous system, as the simulation runs it
+async function pollBrain() {
+  try {
+    if (following !== null) {
+      const b = await (await fetch("/brain.json", {cache: "no-store"})).json();
+      drawBrain(b);
+    }
+  } catch (e) { /* offline */ }
+  setTimeout(pollBrain, 500);
+}
+function drawBrain(b) {
+  const c = $("brain"), g = c.getContext("2d"), dpr = devicePixelRatio || 1;
+  const W = c.clientWidth, H = 220;
+  if (c.width !== W * dpr) { c.width = W * dpr; c.height = H * dpr; }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (!b.type || !b.type.length) {
+    $("braininfo").textContent = b.org === undefined ? "따라가는 생물체가 없습니다." : `생물체 #${b.org} · ${b.segments}마디 · 뉴런 없음 (신경계 유전자가 아직 몸에 나타나지 않았습니다)`;
+    return;
+  }
+  const n = b.type.length, segs = Math.max(b.segments, 1), pos = [], slot = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = b.seg[i] * 8 + b.type[i], k = slot.get(key) || 0; slot.set(key, k + 1);
+    pos.push([30 + (b.seg[i] + 0.5) / segs * (W - 60) + (k % 4) * 6 - 9, 18 + (b.type[i] + 0.5) / 8 * (H - 36) + Math.floor(k / 4) * 5]);
+  }
+  for (const [pre, post, w] of b.syn) {
+    g.strokeStyle = w > 0 ? `rgba(110,220,140,${Math.min(Math.abs(w) / 4, 1) * 0.5})` : `rgba(240,120,170,${Math.min(Math.abs(w) / 4, 1) * 0.5})`;
+    g.lineWidth = 1; g.beginPath(); g.moveTo(pos[pre][0], pos[pre][1]); g.lineTo(pos[post][0], pos[post][1]); g.stroke();
+  }
+  for (let i = 0; i < n; i++) {
+    const r = b.rate[i], col = r >= 0 ? `rgb(${120 + 135 * r | 0},90,80)` : `rgb(70,${90 - 40 * r | 0},${120 - 135 * r | 0})`;
+    g.fillStyle = col; g.beginPath(); g.arc(pos[i][0], pos[i][1], 4, 0, Math.PI * 2); g.fill();
+  }
+  g.fillStyle = "rgba(200,210,220,.7)"; g.font = "11px system-ui";
+  for (let s2 = 0; s2 < segs; s2++) g.fillText(s2 === 0 ? "머리" : `${s2 + 1}`, 30 + (s2 + 0.5) / segs * (W - 60) - 8, H - 4);
+  $("braininfo").textContent = `생물체 #${b.org} · ${b.segments}마디 · 뉴런 ${n}개 · 시냅스 ${b.syn.length}개 (선충 302개·약 7,000개)`;
+}
+pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); pollEvents(); pollBrain(); requestAnimationFrame(draw);
 </script>
 </body>
 </html>

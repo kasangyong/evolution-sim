@@ -75,6 +75,7 @@ class Shared:
         self.cells = b""
         self.tracker = SpeciesTracker()
         self.events: list[dict] = []  # event journal entries, newest last
+        self.brain = b"{}"  # stage 7c: the followed organism's nervous system
         self.commands: queue.Queue = queue.Queue()
 
 
@@ -208,6 +209,11 @@ def make_handler(shared: Shared, history: History):
                 else:
                     self.send_error(404)
                 return
+            if path == "/brain.json":
+                with shared.lock:
+                    body = shared.brain
+                self.send(body, "application/json")
+                return
             if path == "/species.json":
                 try:
                     up_to = int(q["t"][0]) if "t" in q else None
@@ -313,8 +319,17 @@ def organism_events(a) -> dict:
     places = {"organism": tuple(map(float, t["head"][int(np.argmax(t["n"]))]))}
     if swum.any():
         places["org_swim"] = tuple(map(float, t["head"][int(np.argmax(t["travel"]))]))
+    neural = t["neurons"] > 0
+    head_share = np.array([(a.orgs.nseg.to_numpy()[o, :k] == 0).mean() if k else 0.0
+                           for o, k in zip(t["id"], t["neurons"])])
+    central = (t["neurons"] >= 8) & (head_share > 0.5)
+    if neural.any():
+        places["neurons"] = tuple(map(float, t["head"][int(np.argmax(t["neurons"]))]))
+    if central.any():
+        places["central"] = tuple(map(float, t["head"][int(np.argmax(t["neurons"] * central))]))
     return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
-            "org_swimmers": int(swum.sum()), "places_org": places}
+            "org_swimmers": int(swum.sum()), "org_neural": int(neural.sum()),
+            "org_central": int(central.sum()), "places_org": places}
 
 
 ORG_LIST = 30  # organisms sent to the viewer (longest bodies first), for the follow camera
@@ -327,6 +342,7 @@ def organism_summary(a) -> dict:
         return {"orgs": 0, "org_seg_max": 0, "org_list": []}
     order = np.lexsort((-t["travel"], -t["n"]))[:ORG_LIST]
     return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
+            "org_neurons_max": int(t["neurons"].max()),
             "org_list": [[int(t["id"][k]), int(t["n"][k]), float(t["head"][k, 0]),
                           float(t["head"][k, 1]), float(t["travel"][k])] for k in order]}
 
@@ -343,7 +359,8 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
     print(f"live viewer: http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}",
           flush=True)
 
-    state = {"paused": False, "speed": 0, "layer": NATURAL_LAYER, "show_life": True, "view": None}
+    state = {"paused": False, "speed": 0, "layer": NATURAL_LAYER, "show_life": True, "view": None,
+             "brain": None}
     notice = ""  # last problem to show the viewer (e.g. a failed re-run)
 
     def vmax_for(layer: int) -> float:
@@ -470,6 +487,8 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
         while not shared.commands.empty():
             cmd = shared.commands.get()
             try:
+                if "brain" in cmd:  # which organism's nervous system to show (None: none)
+                    state["brain"] = None if cmd["brain"] is None else int(cmd["brain"])
                 if "paused" in cmd:
                     state["paused"] = bool(cmd["paused"])
                 if "show_life" in cmd:
@@ -572,8 +591,12 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
             }
             frame = png(rgb)
             body = json.dumps(stats).encode()
+            brain = b"{}"
+            o = state["brain"]
+            if o is not None and 0 <= o < sim.life.orgs.cap and sim.life.orgs.state[o] == 1:
+                brain = json.dumps(sim.life.orgs.brain(o)).encode()
             with shared.lock:
-                shared.frame, shared.stats = frame, body
+                shared.frame, shared.stats, shared.brain = frame, body, brain
 
         if state["view"] is not None and time.perf_counter() - last_cells >= CELLS_EVERY_S:
             last_cells = time.perf_counter()

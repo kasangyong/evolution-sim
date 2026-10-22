@@ -25,6 +25,7 @@ for path, val in opts.items():
 sim = Sim(cfg)
 t, worst, min_pop, first_photo = time.perf_counter(), 0.0, None, None
 first_org, max_orgs, max_seg, max_swum = None, 0, 0, 0.0  # stage 7b
+max_neurons, neural_orgs = 0, 0  # stage 7c
 while sim.tick < ticks and sim.life.count() > 0:
     sim.step(1000)
     pop = sim.life.count()
@@ -41,6 +42,8 @@ while sim.tick < ticks and sim.life.count() > 0:
         first_org = sim.tick if first_org is None else first_org
         max_orgs, max_seg = max(max_orgs, len(orgs["id"])), max(max_seg, int(orgs["n"].max()))
         max_swum = max(max_swum, float(orgs["travel"].max()))
+        max_neurons = max(max_neurons, int(orgs["neurons"].max()))
+        neural_orgs = max(neural_orgs, int((orgs["neurons"] > 0).sum()))
 snap = sim.life.snapshot()
 if "save" in opts:
     alive = sim.life.state.to_numpy() == ALIVE
@@ -60,4 +63,5 @@ print(f"seed {seed:>2} {status:<14} pop {sim.life.count():>6} min_pop {min_pop:>
       f"min_cells {min_cells:.3g} worst_err {worst:.1e} {time.perf_counter() - t:.0f}s | photic {photic} first_photo "
       f"{first_photo} dark {sim.life.count() - photic} cells {sim.life.cells():.3g} body {body:.3f} {photo} O2 {o2:.3g} | "
       f"{genes} | orgs {sim.life.orgs.count()} first_org {first_org} max_orgs {max_orgs} "
-      f"max_seg {max_seg} max_swum {max_swum:.1f}", flush=True)
+      f"max_seg {max_seg} max_swum {max_swum:.1f} max_neurons {max_neurons} neural_orgs {neural_orgs}",
+      flush=True)

@@ -113,10 +113,16 @@ def test_full_pool_turns_slots_into_super_individuals(small_cfg):
     snap = a.snapshot()
     assert a.count() >= 0.95 * a.cap  # slots freed by deaths refill next tick
     assert snap["ncell"].max() > 1 and a.cells() > a.cap
-    per_cell = snap["body"] / snap["ncell"]
-    # growth stops at 2 × division size; a cell short of division energy can overshoot by one
-    # tick of growth (measured max 2.21×)
-    assert (per_cell < 2.5 * snap["genome"][:, DIV_SIZE]).all()
+    # growth stops at 2 × division size: the cap is checked once per tick, so a fast grower can
+    # overshoot by one tick of growth (up to ~0.3× for a shallow anoxygenic photosynthesizer,
+    # stage 7c evaluation). The invariant: a slot at or over the cap fixes no more carbon
+    alive = a.state.to_numpy() == ALIVE
+    body, uid = a.body.to_numpy(), a.uid.to_numpy()
+    over = alive & (body / np.maximum(a.ncell.to_numpy(), 1e-12)
+                    >= 2.0 * a.genome.to_numpy()[:, DIV_SIZE])
+    sim.step(1)
+    same = over & (a.uid.to_numpy() == uid) & (a.state.to_numpy() == ALIVE)
+    assert (a.body.to_numpy()[same] <= body[same] * (1 + 1e-12)).all()
     assert sim.budget_error().worst() < 1e-9
 
 

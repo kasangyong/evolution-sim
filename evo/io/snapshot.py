@@ -9,7 +9,9 @@ import numpy as np
 from evo.config import ChemConfig, ClimateConfig, Config, LifeConfig, WorldConfig
 from evo.world.ledger import Totals
 
-SCHEMA_VERSION = 4  # 2: stage 6 (adhesion gene); 3: stage 7a (12-input brain, senses); 4: 7b bodies
+SCHEMA_VERSION = 5  # 2: stage 6 (adhesion gene); 3: 7a (12-input brain, senses); 4: 7b bodies;
+# 5: 7c neural genes. Nervous systems are not stored: on restore they regrow from the genes
+# (development draws new synapse noise, like a re-run on the GPU: same genes, not the same run)
 WORLD_FIELDS = ("chem", "atm", "clim", "acc")
 AGENT_FIELDS = ("state", "pos", "body", "energy", "age", "ncell", "uid", "parent", "genome", "free",
                 "act", "species", "adapt", "heading", "org", "seg", "metab_frac", "gen")
@@ -34,10 +36,11 @@ def capture(sim) -> dict:
 
 
 def upgrade(arrays: dict, sim) -> dict:
-    """A stage-7a snapshot (schema 3) as schema 4: the 12 body-plan genes appended at their founder
-    values (no lineage differentiates yet), every slot a free cell, no organisms. Lets a world
-    recorded before stage 7b run on with bodies possible."""
-    if int(arrays["schema_version"]) != 3:
+    """An older snapshot as the current schema: genes appended since then take their founder
+    values (schema 3: no body plan, schema 4: no neurons); schema 3 also gets every slot as a free
+    cell and an empty organism table. Lets a recorded world run on with the new abilities possible."""
+    version = int(arrays["schema_version"])
+    if version not in (3, 4):
         return arrays
     from evo.life.genome import FOUNDER, N_GENES
 
@@ -45,15 +48,16 @@ def upgrade(arrays: dict, sim) -> dict:
     g = arrays["life.genome"]
     tail = np.broadcast_to(np.array(FOUNDER[g.shape[1]:], np.float32), (len(g), N_GENES - g.shape[1]))
     out["life.genome"] = np.ascontiguousarray(np.concatenate([g, tail], axis=1))
-    cap = len(g)
-    out["life.org"] = np.full(cap, -1, np.int32)
-    out["life.seg"] = np.zeros(cap, np.int32)
-    out["life.metab_frac"] = np.ones(cap, np.float32)
-    out["life.gen"] = np.zeros(cap, np.int32)
-    o = sim.life.orgs
-    out.update({f"org.{k}": getattr(o, k).to_numpy() for k in ORG_FIELDS})  # a fresh, empty table
-    out["org.top"] = np.array(o.top[None], np.int64)
-    out["org.next_uid"] = np.array(o.next_uid[None], np.int64)
+    if version == 3:
+        cap = len(g)
+        out["life.org"] = np.full(cap, -1, np.int32)
+        out["life.seg"] = np.zeros(cap, np.int32)
+        out["life.metab_frac"] = np.ones(cap, np.float32)
+        out["life.gen"] = np.zeros(cap, np.int32)
+        o = sim.life.orgs
+        out.update({f"org.{k}": getattr(o, k).to_numpy() for k in ORG_FIELDS})  # fresh, empty
+        out["org.top"] = np.array(o.top[None], np.int64)
+        out["org.next_uid"] = np.array(o.next_uid[None], np.int64)
     out["schema_version"] = np.array(SCHEMA_VERSION, np.int64)
     return out
 
@@ -71,6 +75,10 @@ def restore(sim, arrays: dict) -> None:
     for k in ORG_FIELDS:
         getattr(a.orgs, k).from_numpy(arrays[f"org.{k}"])
     a.orgs.top[None] = int(arrays["org.top"])
+    a.orgs.dirty.from_numpy((arrays["org.state"] == 1).astype(np.int32))  # nerves regrow
+    a.orgs.nn.fill(0)
+    a.orgs.bend.fill(0.0)
+    a.orgs.bend_prev.fill(0.0)
     a.orgs.next_uid[None] = int(arrays["org.next_uid"])
     a.top[None] = int(arrays["life.top"])
     a.next_uid[None] = int(arrays["life.next_uid"])

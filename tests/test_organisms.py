@@ -174,28 +174,41 @@ def test_metabolism_only_in_metabolic_tissue(small_cfg):
 
 
 def swim_distance(cfg, n=8, ticks=400, over=None):
+    """Head displacement, and its component along the body's time-averaged head-ward axis
+    (head minus the mean of the segments): > 0 means head first."""
     sim = empty_world(cfg)
     sim.world.psi.fill(0.0)  # still water
     g = genes({MUSCLE: 4.0, CPG_AMP: 0.8, CPG_FREQ: 0.05, CPG_LAG: 0.6, **(over or {})})
-    oid, _ = make_org(sim, g, n, head=(70.5, 20.5), energy=10.0)
+    oid, slots = make_org(sim, g, n, head=(70.5, 20.5), energy=10.0)
     start = sim.life.orgs.head.to_numpy()[oid].copy()
+    axis = np.zeros(2)
     for _ in range(ticks):
         sim.life.orgs.swim()
-    return sim.life.orgs.head.to_numpy()[oid] - start
+        pos = sim.life.pos.to_numpy()[slots]
+        axis += pos[0] - pos.mean(axis=0)
+    d = sim.life.orgs.head.to_numpy()[oid] - start
+    return d, float(d @ axis / max(np.linalg.norm(axis), 1e-9))
 
 
 def test_a_backward_bending_wave_swims_forward(small_cfg):
-    fwd = swim_distance(small_cfg)
-    back = swim_distance(small_cfg, over={CPG_LAG: -0.6})
-    still = swim_distance(small_cfg, over={CPG_AMP: 0.0})
-    assert fwd[0] > 1.0  # head first (+x)
-    assert back[0] < -1.0  # the wave the other way: tail first
-    assert np.abs(still).max() < 0.01 * fwd[0]  # only the trace of cilia left (share ~3e-4)
+    _, along_f = swim_distance(small_cfg)
+    _, along_b = swim_distance(small_cfg, over={CPG_LAG: -0.6})
+    still, _ = swim_distance(small_cfg, over={CPG_AMP: 0.0})
+    assert along_f > 1.0  # head first
+    assert along_b < -1.0  # the wave the other way: tail first
+    assert np.abs(still).max() < 0.01 * along_f  # only the trace of cilia left (share ~3e-4)
+
+
+def test_a_standing_wave_goes_nowhere(small_cfg):
+    # all joints in phase: a reciprocal stroke, which at low Reynolds number gives no net motion
+    # (scallop theorem); the midpoint rule keeps the integration time-symmetric
+    d, _ = swim_distance(small_cfg, over={CPG_LAG: 0.0, CILIA: -8.0})
+    assert np.abs(d).max() < 0.01
 
 
 def test_cilia_alone_glide_forward(small_cfg):
-    d = swim_distance(small_cfg, n=4, over={MUSCLE: -4.0, CILIA: 4.0, CPG_AMP: 0.0})
-    assert d[0] > 0.5 and abs(d[1]) < 0.1 * d[0]
+    d, along = swim_distance(small_cfg, n=4, over={MUSCLE: -4.0, CILIA: 4.0, CPG_AMP: 0.0})
+    assert along > 0.5 and abs(d[1]) < 0.1 * d[0]
 
 
 def test_budget_holds_with_organisms(small_cfg):
@@ -224,3 +237,15 @@ def test_same_seed_same_organisms(small_cfg):
 
     (p1, h1), (p2, h2) = run(), run()
     assert np.array_equal(p1, p2) and np.array_equal(h1, h2)
+
+
+def test_travel_counts_swimming_not_drifting(small_cfg):
+    sim = empty_world(small_cfg)  # currents on
+    oid, _ = make_org(sim, genes({MUSCLE: 4.0, CILIA: -8.0, CPG_AMP: 0.0}), 4, head=(64.5, 30.5),
+                      energy=10.0)
+    o = sim.life.orgs
+    start = o.head.to_numpy()[oid].copy()
+    for _ in range(200):
+        o.swim()
+    assert np.linalg.norm(o.head.to_numpy()[oid] - start) > 0.1  # carried by the current
+    assert o.travel[oid] < 1e-3  # but it did not swim

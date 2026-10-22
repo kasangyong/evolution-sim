@@ -43,6 +43,9 @@ class Summary:
     orgs: int = 0
     org_seg_max: int = 0
     org_swimmers: int = 0
+    # stage 7c: organisms with neurons; with a central brain (≥ 8 neurons, most in the head)
+    org_neural: int = 0
+    org_central: int = 0
 
 
 ABILITIES = (  # (summary field, kind, threshold, re-arm below, Korean name, what it means)
@@ -139,6 +142,17 @@ class EventDetector:
                             f"근육이나 섬모로 스스로 몸길이의 몇 배 이상 나아간 생물체가 생겼습니다"
                             f"({s.org_swimmers}마리, 저항력 이론으로 계산한 실제 이동).", nums,
                             s.places.get("org_swim")))
+
+        if self._fire("neurons", s.org_neural > 0, s.org_neural == 0):
+            ev.append(Event(s.tick, "neurons", "첫 신경 세포",
+                            f"신경계를 가진 생물체가 생겼습니다({s.org_neural}마리). 뉴런 유형 유전자가 "
+                            "몸에 나타나 회로로 자랐습니다. 뉴런은 감각을 받아 마디를 굽힙니다.", nums,
+                            s.places.get("neurons")))
+        if self._fire("central", s.org_central > 0, s.org_central == 0):
+            ev.append(Event(s.tick, "central", "중추 신경계(뇌)",
+                            f"뉴런 8개 이상 중 절반 넘게가 머리에 모인 생물체가 생겼습니다"
+                            f"({s.org_central}마리). 신경이 한곳에 모이는 중추화입니다.", nums,
+                            s.places.get("central")))
 
         total = max(sum(c for c, _, _ in s.species.values()), 1.0)
         now_major = {sid for sid, (c, _, _) in s.species.items() if c >= 0.05 * total}

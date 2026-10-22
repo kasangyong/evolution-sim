@@ -135,6 +135,9 @@ class LifeConfig:
     k_work: float = 0.01  # energy per unit body per unit dissipated swimming power
     turn_ticks: int = 10  # a turn bends the body to one side this long
     turn_bend: float = 0.4  # extra bend per muscle joint during a turn (radians)
+    # stage 7c: nervous systems. 100 neurons ≈ 30% of the maintenance of a 0.1-body organism
+    k_neuron: float = 1.0e-6  # energy per neuron per tick
+    k_syn: float = 1.0e-7  # energy per unit Σ|synapse weight| per tick
 
 
 @dataclass

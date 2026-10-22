@@ -631,6 +631,7 @@ class Agents:
 
     def step(self):
         self.move()
+        self.orgs.neural()
         self.orgs.swim()
         self.census()
         self.think()
@@ -643,6 +644,7 @@ class Agents:
         self.reproduce()
         self.orgs.integrity()
         self.orgs.transition()
+        self.orgs.wire()
         self.orgs.tissue()
 
     def snapshot(self) -> dict:

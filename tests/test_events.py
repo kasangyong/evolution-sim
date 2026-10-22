@@ -109,3 +109,12 @@ def test_organism_events_fire_once_with_a_place():
     assert not {"organism", "body", "org_swim"} & set(kinds(d, replace(BASE, tick=4000, orgs=3,
                                                                       org_seg_max=5,
                                                                       org_swimmers=1)))
+
+
+def test_nervous_system_events():
+    d = EventDetector()
+    kinds(d, BASE)
+    got = kinds(d, replace(BASE, tick=2000, orgs=2, org_neural=2, org_central=1))
+    assert {"neurons", "central"} <= set(got)
+    assert not {"neurons", "central"} & set(kinds(d, replace(BASE, tick=4000, orgs=2, org_neural=2,
+                                                            org_central=1)))

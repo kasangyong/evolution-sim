@@ -7,6 +7,8 @@ they swam, and the element budget.
 
 plan "chemo" (default): chemosynthetic colonies with a body. plan "predator": swimming hunters
 (the head's brain holds the hunt output on, methanogenesis burns the eaten body for energy).
+plan "neural": chemo bodies that swim by nerves only (no myogenic rhythm): a two-neuron head
+oscillator bends the first joint and a segmental relay passes each bend back (proprioception).
 """
 import sys
 
@@ -25,6 +27,7 @@ from evo.life.agents import ALIVE
 from evo.life.genome import (
     ADHESION,
     BRAIN,
+    CONN,
     CPG_AMP,
     CPG_FREQ,
     CPG_LAG,
@@ -35,6 +38,8 @@ from evo.life.genome import (
     N_HID,
     N_IN,
     N_SEG,
+    N_TYPES,
+    NEURO,
     PREY_RATIO,
     SEG_CELLS,
     TISSUE,
@@ -57,6 +62,16 @@ best = alive[np.argsort(-g[alive, ETA_H2])][:40]  # the best-adapted chemosynthe
 plan = {ADHESION: 0.9, DIFF: 0.9, N_SEG: 6.0, SEG_CELLS: 8.0, TISSUE: -2.0, TISSUE + 1: 4.0,
         TISSUE + 2: -6.0, TISSUE + 3: 0.0, TISSUE + 4: -8.0, TISSUE + 5: 11.0, CPG_AMP: 0.6,
         CPG_FREQ: 0.05, CPG_LAG: 0.6}
+if plan_name == "neural":
+    # neuron type genes: (count, segmental, tau, bias, channel, sgain, mgain, density)
+    nt = lambda k, p: NEURO + 8 * k + p
+    plan |= {CPG_AMP: 0.0,
+             nt(0, 0): 1.0, nt(0, 2): 6.0, nt(0, 6): 0.7, nt(0, 7): 24.0,
+             nt(1, 0): 1.0, nt(1, 2): 6.0, nt(1, 7): 24.0,
+             nt(2, 0): 1.0, nt(2, 1): 1.0, nt(2, 2): 3.0, nt(2, 4): 6.5, nt(2, 5): 1.0, nt(2, 6): 1.0,
+             nt(2, 7): 0.0,
+             # oscillator: self-excitation 1.5 and rotation ±2 (CONN + 8·post + pre)
+             CONN + 0: 1.5, CONN + 1: -2.0, CONN + N_TYPES: 2.0, CONN + N_TYPES + 1: 1.5}
 if plan_name == "predator":
     # hidden unit 0 always on (bias 2), wired to the hunt output (ACT_HUNT = 2)
     plan |= {ETA_PRED: 0.9, PREY_RATIO: 1.0, ETA_METH: 0.9, BRAIN + N_IN * N_HID: 2.0,

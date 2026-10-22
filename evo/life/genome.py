@@ -1,4 +1,4 @@
-"""Genome layout (§3, stage 7b; new genes are appended so indices stay stable). Genes
+"""Genome layout (§3, stage 7c; new genes are appended so indices stay stable). Genes
 are stored directly in trait units and clamped to their range after mutation; mutation noise
 is scaled by each trait's range."""
 
@@ -21,9 +21,16 @@ DIFF = ADAPT_TAU + 1
 N_SEG, SEG_CELLS = DIFF + 1, DIFF + 2
 TISSUE = DIFF + 3  # 6 genes: (a, b) for muscle, cilia, germ
 CPG_AMP, CPG_FREQ, CPG_LAG = TISSUE + 6, TISSUE + 7, TISSUE + 8
-N_GENES = CPG_LAG + 1
-# genes that describe the organism (not the brain): species distance, big mutations
-TRAIT_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU) + tuple(range(DIFF, N_GENES))
+# stage 7c: nervous system by developmental encoding (stage7b-arch.md, "7c 구현 결정"). 8 neuron
+# types, each NEURO + 8·k + (count, segmental, tau, bias, sense channel, sense gain, motor gain,
+# synapse density); connection strength between types at CONN + 8·k(post) + l(pre)
+N_TYPES = 8
+NEURO = CPG_LAG + 1
+NT_COUNT, NT_SEGMENTAL, NT_TAU, NT_BIAS, NT_CHANNEL, NT_SGAIN, NT_MGAIN, NT_DENSITY = range(8)
+CONN = NEURO + 8 * N_TYPES
+N_GENES = CONN + N_TYPES * N_TYPES
+# genes that describe the organism (not the brains): species distance, big mutations
+TRAIT_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU) + tuple(range(DIFF, NEURO))
 # species distance: the stage-7a traits. Body-plan genes act only once a lineage differentiates; in
 # single cells they drift freely and would dilute the distance (threshold calibrated on these 22)
 SPECIES_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU)
@@ -62,18 +69,31 @@ GENE_RANGE = [
     (0.0, 1.2),  # muscle bend amplitude (radians per joint)
     (0.0, 0.25),  # muscle rhythm (cycles per tick)
     (-3.1416, 3.1416),  # phase lag per segment (> 0: bending wave runs head to tail)
-]
+] + [
+    (0.0, 8.0),  # neurons of this type (per segment if segmental, else in the head)
+    (0.0, 1.0),  # ≥ 0.5: repeated in every segment
+    (1.0, 20.0),  # membrane time constant (ticks)
+    (-4.0, 4.0),  # bias
+    (0.0, 6.99),  # sense channel (floor): 0-3 H2/sulfide/O2/light change, 4 hunger, 5 touch, 6 bend
+    (-4.0, 4.0),  # sense gain
+    (-1.0, 1.0),  # motor gain: bend of its segment's joint per unit output (radians)
+    (0.0, 24.0),  # synapses it tries to receive
+] * N_TYPES + [(-4.0, 4.0)] * (N_TYPES * N_TYPES)
 GENE_NAMES = ["div_size", "eta_h2", "eta_meth", "eta_anaer", "t_opt", "t_width", "mut_rate",
               "col_r", "col_g", "col_b", "eta_photo_an", "eta_photo_ox", "eta_aer", "eta_sfix",
               "eta_sox", "eta_mox", "o2_tol", "eta_pred", "speed", "prey_ratio"] + [
     f"brain{k}" for k in range(N_BRAIN)] + ["adhesion", "adapt_tau", "diff", "n_seg", "seg_cells",
                                          "muscle_a", "muscle_b", "cilia_a", "cilia_b", "germ_a",
-                                         "germ_b", "cpg_amp", "cpg_freq", "cpg_lag"]
+                                         "germ_b", "cpg_amp", "cpg_freq", "cpg_lag"] + [
+    f"n{k}_{p}" for k in range(N_TYPES)
+    for p in ("count", "segmental", "tau", "bias", "channel", "sgain", "mgain", "density")] + [
+    f"w{k}_{l}" for k in range(N_TYPES) for l in range(N_TYPES)]
 
 # B-plan founder (§3): H2 chemosynthesis + methanogenesis only
 # zero brain: no movement, no predation, no division inhibition (stage-3a behaviour)
 FOUNDER = [0.02, 0.5, 0.3, 0.0, 30.0, 20.0, 0.02, 0.85, 0.35, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
            0.0, 0.0, 0.0, 2.0] + [0.0] * N_BRAIN + [0.0, 5.0] + [
-    0.0, 4.0, 32.0] + [0.0] * 6 + [0.3, 0.05, 0.5]  # no differentiation: a single-celled founder
+    0.0, 4.0, 32.0] + [0.0] * 6 + [0.3, 0.05, 0.5] + [  # no differentiation: a single cell
+    0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 8.0] * N_TYPES + [0.0] * (N_TYPES * N_TYPES)  # no neurons
 
 assert len(GENE_RANGE) == len(GENE_NAMES) == len(FOUNDER) == N_GENES

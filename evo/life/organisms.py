@@ -15,6 +15,9 @@ keeps the chain (slot and uid per segment) and does what only a body can do:
 - integrity: a dead segment cuts the body there (the rest falls off as colonies); a dead head
   dissolves the organism
 - transition: a differentiating colony (DIFF ≥ 0.5) of org_min_cells cells becomes an organism
+- wire / neural (stage 7c): the nervous system grows from neuron-type genes (developmental
+  encoding) whenever the body changes, and runs as a continuous-time recurrent network of graded
+  neurons; motor neurons bend their segment's joint, sensory ones read the segment's senses
 
 Free-lists: develop and transition pop, integrity pushes (never both in one kernel, §4.6)."""
 import math
@@ -22,15 +25,27 @@ import math
 import numpy as np
 import taichi as ti
 
-from evo.life.agents import ACT_ON, ACT_TUMBLE, ALIVE, COLONY_ADHESION, N_OUT
+from evo.config import H, O, R
+from evo.life.agents import ACT_ON, ACT_TUMBLE, ADAPT_UNSET, ALIVE, COLONY_ADHESION, N_OUT
 from evo.life.genome import (
     ADHESION,
+    CONN,
     CPG_AMP,
     CPG_FREQ,
     CPG_LAG,
     DIFF,
     N_GENES,
     N_SEG,
+    N_TYPES,
+    NEURO,
+    NT_BIAS,
+    NT_CHANNEL,
+    NT_COUNT,
+    NT_DENSITY,
+    NT_MGAIN,
+    NT_SEGMENTAL,
+    NT_SGAIN,
+    NT_TAU,
     SEG_CELLS,
     TISSUE,
 )
@@ -42,6 +57,9 @@ T_METAB, T_MUSCLE, T_CILIA, T_GERM = range(4)
 GERM_ON = 0.5  # a segment mostly of germ tissue releases single cells instead of growing
 DIFF_ON = 0.5
 TWO_PI = 2.0 * math.pi
+MAX_NEU, MAX_SYN = 256, 24  # per organism: neurons, synapses received per neuron
+N_CHANNELS = 7  # senses: 4 chemical/light changes, hunger, touch, bend ahead (proprioception)
+NEURAL_SUBSTEPS = 2
 
 
 @ti.data_oriented
@@ -61,13 +79,27 @@ class Organisms:
         self.turn = ti.field(ti.i32, shape=cap)  # ticks left of a turn
         self.turn_sign = ti.field(ti.f32, shape=cap)
         self.uid = ti.field(ti.i64, shape=cap)
-        self.travel = ti.field(ti.f32, shape=cap)  # distance the head has swum (cells)
+        self.travel = ti.field(ti.f32, shape=cap)  # distance swum by itself (cells, no current)
         self.free = ti.field(ti.i32, shape=cap)
         self.top = ti.field(ti.i32, shape=())
         self.next_uid = ti.field(ti.i64, shape=())
         self.free.from_numpy(np.arange(cap - 1, -1, -1, dtype=np.int32))
         self.top[None] = cap
         self.next_uid[None] = 1
+        # stage 7c: nervous system (rebuilt when `dirty`; not stored in snapshots, see snapshot.py)
+        self.dirty = ti.field(ti.i32, shape=cap)
+        self.nn = ti.field(ti.i32, shape=cap)  # neurons
+        self.ntype = ti.field(ti.i32, shape=(cap, MAX_NEU))
+        self.nseg = ti.field(ti.i32, shape=(cap, MAX_NEU))
+        self.v = ti.field(ti.f32, shape=(cap, MAX_NEU))  # membrane potential
+        self.rate = ti.field(ti.f32, shape=(cap, MAX_NEU))  # graded output tanh(v)
+        self.nsyn = ti.field(ti.i32, shape=(cap, MAX_NEU))
+        self.pre = ti.field(ti.i32, shape=(cap, MAX_NEU, MAX_SYN))
+        self.w = ti.field(ti.f32, shape=(cap, MAX_NEU, MAX_SYN))
+        self.wsum = ti.field(ti.f32, shape=cap)  # sum of |w|, for the upkeep
+        self.bend = ti.field(ti.f32, shape=(cap, MAX_SEG))  # neural bend of each joint, now
+        self.bend_prev = ti.field(ti.f32, shape=(cap, MAX_SEG))
+        self.joint = ti.field(ti.f32, shape=(cap, MAX_SEG))  # joint angles (proprioception)
 
     def count(self) -> int:
         return self.cap - self.top[None]
@@ -113,25 +145,47 @@ class Organisms:
                     self.a.energy[i] = e * ti.cast(self.a.body[i], ti.f32) / ti.max(b, 1e-12)
 
     @ti.func
-    def shape(self, o: int, phase: ti.f32, bias: ti.f32):
-        """Body-frame segment positions and tangents (head at the origin facing +x): joint k bends
-        by muscle share × (A·sin(2π·phase − lag·k) + bias)."""
+    def shape(self, o: int, phase: ti.f32, bias: ti.f32, bend: ti.template(), record: ti.template()):
+        """Body frame of a bead-and-link chain: bead 0 (the head) at the origin, link 1 pointing
+        back along −x, so the head faces +x. Joint j is the bend at bead j between links j and
+        j + 1 (an n-bead body has n − 2 joints: two beads are rigid, three are a one-hinge
+        scallop): muscle share of bead j × (A·sin(2π·phase − lag·j) + bias + neural bend).
+        Returns bead positions and unit tangents pointing headward (the mean of the two links)."""
         h = self.slot[o, 0]
         amp, lag = self.a.genome[h, CPG_AMP], self.a.genome[h, CPG_LAG]
+        n = self.n[o]
         rx = ti.Vector.zero(ti.f32, MAX_SEG)
         ry = ti.Vector.zero(ti.f32, MAX_SEG)
+        dx = ti.Vector.zero(ti.f32, MAX_SEG)  # link k direction (bead k − 1 → bead k)
+        dy = ti.Vector.zero(ti.f32, MAX_SEG)
+        a = math.pi
+        for k in ti.static(range(1, MAX_SEG)):
+            if k < n:
+                if k >= 2:
+                    j = k - 1
+                    mus = self.shares(self.slot[o, j], j)[T_MUSCLE]
+                    th = mus * (amp * ti.sin(TWO_PI * phase - lag * j) + bias + bend[o, j])
+                    if ti.static(record):
+                        self.joint[o, j] = th
+                    a += th
+                dx[k] = ti.cos(a)
+                dy[k] = ti.sin(a)
+                rx[k] = rx[k - 1] + self.cfg.seg_len * dx[k]
+                ry[k] = ry[k - 1] + self.cfg.seg_len * dy[k]
         tx = ti.Vector.zero(ti.f32, MAX_SEG)
         ty = ti.Vector.zero(ti.f32, MAX_SEG)
         tx[0] = 1.0
-        ang = 0.0
         for k in ti.static(range(1, MAX_SEG)):
-            if k < self.n[o]:
-                mus = self.shares(self.slot[o, k], k)[T_MUSCLE]
-                ang += mus * (amp * ti.sin(TWO_PI * phase - lag * k) + bias)
-                tx[k] = ti.cos(ang)
-                ty[k] = ti.sin(ang)
-                rx[k] = rx[k - 1] - self.cfg.seg_len * tx[k]
-                ry[k] = ry[k - 1] - self.cfg.seg_len * ty[k]
+            if k < n:
+                ex, ey = -dx[k], -dy[k]
+                if k + 1 < n:
+                    ex -= dx[ti.min(k + 1, MAX_SEG - 1)]
+                    ey -= dy[ti.min(k + 1, MAX_SEG - 1)]
+                norm = ti.max(ti.sqrt(ex * ex + ey * ey), 1e-6)
+                tx[k] = ex / norm
+                ty[k] = ey / norm
+        if n > 1:
+            tx[0], ty[0] = -dx[1], -dy[1]
         return rx, ry, tx, ty
 
     @ti.kernel
@@ -152,18 +206,22 @@ class Organisms:
                     bias = self.cfg.turn_bend * self.turn_sign[o]
                     self.turn[o] -= 1
                 ph = self.phase[o] + freq
-                rx, ry, tx, ty = self.shape(o, ph, bias)
-                px, py, _, _ = self.shape(o, self.phase[o], bias)
+                # midpoint rule (time-symmetric): velocities from the shape halfway through the
+                # tick, so a reciprocal stroke gives no net motion (scallop theorem)
+                rx, ry, tx, ty = self.shape(o, ph, bias, self.bend, True)
+                px, py, qx, qy = self.shape(o, self.phase[o], bias, self.bend_prev, False)
+                for k in ti.static(range(MAX_SEG)):
+                    self.bend_prev[o, k] = self.bend[o, k]
                 self.phase[o] = ph - ti.floor(ph)
                 A = ti.Matrix.zero(ti.f32, 3, 3)
                 rhs = ti.Vector.zero(ti.f32, 3)
                 ct, cn, ll = self.cfg.drag_t, self.cfg.drag_n, self.cfg.seg_len
                 for k in ti.static(range(MAX_SEG)):
                     if k < self.n[o]:
-                        t = ti.math.vec2(tx[k], ty[k])
+                        t = ti.math.vec2(tx[k] + qx[k], ty[k] + qy[k]).normalized()
                         nn = ti.math.vec2(-t.y, t.x)
                         D = ct * t.outer_product(t) + cn * nn.outer_product(nn)
-                        p = ti.math.vec2(-ry[k], rx[k])
+                        p = ti.math.vec2(-(ry[k] + py[k]), rx[k] + px[k]) * 0.5
                         u = ti.math.vec2(rx[k] - px[k], ry[k] - py[k])
                         f = self.cfg.k_cilia * self.shares(self.slot[o, k], k)[T_CILIA] * t
                         Dp = D @ p
@@ -187,17 +245,18 @@ class Organisms:
                 body = 0.0
                 for k in ti.static(range(MAX_SEG)):
                     if k < self.n[o]:
-                        t = ti.math.vec2(tx[k], ty[k])
+                        t = ti.math.vec2(tx[k] + qx[k], ty[k] + qy[k]).normalized()
                         nn = ti.math.vec2(-t.y, t.x)
-                        v = V + W * ti.math.vec2(-ry[k], rx[k]) + ti.math.vec2(rx[k] - px[k], ry[k] - py[k])
+                        p = ti.math.vec2(-(ry[k] + py[k]), rx[k] + px[k]) * 0.5
+                        v = V + W * p + ti.math.vec2(rx[k] - px[k], ry[k] - py[k])
                         power += ct * v.dot(t) ** 2 + cn * v.dot(nn) ** 2
                         body += ti.cast(self.a.body[self.slot[o, k]], ti.f32)
                 self.a.energy[h] -= self.cfg.k_work * power * body / self.n[o]
-                # to the world: rotate by ψ, move the head, drift with the current
-                c, s = ti.cos(self.psi[o]), ti.sin(self.psi[o])
+                # to the world: the frame moves at V turned by the midpoint orientation
+                c, s = ti.cos(self.psi[o] + 0.5 * W), ti.sin(self.psi[o] + 0.5 * W)
                 head = self.head[o]
-                new_head = head + ti.math.vec2(c * V.x - s * V.y, s * V.x + c * V.y) + self.a.flow(
-                    ti.cast(head, ti.i32))
+                own = ti.math.vec2(c * V.x - s * V.y, s * V.x + c * V.y)  # swum, not drifted
+                new_head = head + own + self.a.flow(ti.cast(head, ti.i32))
                 new_psi = self.psi[o] + W
                 c, s = ti.cos(new_psi), ti.sin(new_psi)
                 ok = True
@@ -210,7 +269,8 @@ class Organisms:
                 if not ok:  # blocked by rock or the edge: stay, and turn away
                     new_head, new_psi = head, self.psi[o] + 0.5 * self.turn_sign[o] + 0.1
                     c, s = ti.cos(new_psi), ti.sin(new_psi)
-                self.travel[o] += (new_head - head).norm()
+                if ok:
+                    self.travel[o] += own.norm()  # self-propelled distance only (no current)
                 self.head[o] = new_head
                 self.psi[o] = new_psi
                 for k in ti.static(range(MAX_SEG)):
@@ -306,6 +366,7 @@ class Organisms:
                                 self.slot[o, n] = j
                                 self.suid[o, n] = self.a.uid[j]
                                 self.n[o] = n + 1
+                                self.dirty[o] = 1  # a new segment: the nervous system regrows
                                 self.a.state[j] = ALIVE
 
     @ti.kernel
@@ -327,6 +388,7 @@ class Organisms:
                             self.a.seg[i] = 0
                             self.a.metab_frac[i] = 1.0
                     self.n[o] = cut
+                    self.dirty[o] = 1
                     if cut == 0:
                         self.state[o] = O_DEAD
                         self.free[ti.atomic_add(self.top[None], 1)] = o
@@ -355,8 +417,124 @@ class Organisms:
                     self.turn_sign[o] = 1.0
                     self.travel[o] = 0.0
                     self.uid[o] = ti.atomic_add(self.next_uid[None], 1)
+                    self.dirty[o] = 1
+                    for k in ti.static(range(MAX_SEG)):
+                        self.bend[o, k] = 0.0
+                        self.bend_prev[o, k] = 0.0
+                        self.joint[o, k] = 0.0
                     self.a.org[i] = o
                     self.a.seg[i] = 0
+
+    @ti.func
+    def gene_t(self, h: int, k: int, p: int) -> ti.f32:
+        return self.a.genome[h, NEURO + 8 * k + p]
+
+    @ti.kernel
+    def wire(self):
+        """Development of the nervous system (developmental encoding): neurons of each type in the
+        head, or in every segment, then each neuron draws `density` candidate inputs and keeps one
+        from type l with probability |W[k, l]| / 4 at strength W[k, l] × (1 + 0.1·noise).
+        Segmental types connect only within a segment or to the next. Same genome, slightly
+        different circuit: individual variation."""
+        for o in range(self.cap):
+            if self.state[o] == O_ALIVE and self.dirty[o] == 1:
+                self.dirty[o] = 0
+                h = self.slot[o, 0]
+                n = 0
+                for k in range(N_TYPES):
+                    cnt = ti.cast(ti.floor(self.gene_t(h, k, NT_COUNT)), ti.i32)
+                    segs = 1
+                    if self.gene_t(h, k, NT_SEGMENTAL) >= 0.5:
+                        segs = self.n[o]
+                    for s in range(segs):
+                        for _ in range(cnt):
+                            if n < MAX_NEU:
+                                self.ntype[o, n] = k
+                                self.nseg[o, n] = s
+                                self.v[o, n] = 0.0
+                                self.rate[o, n] = 0.0
+                                n += 1
+                self.nn[o] = n
+                wsum = 0.0
+                for i in range(n):
+                    ki = self.ntype[o, i]
+                    m = 0
+                    dens = ti.min(ti.cast(ti.round(self.gene_t(h, ki, NT_DENSITY)), ti.i32), MAX_SYN)
+                    for _ in range(dens):
+                        j = ti.min(ti.cast(ti.random() * n, ti.i32), n - 1)
+                        kj = self.ntype[o, j]
+                        wk = self.a.genome[h, CONN + N_TYPES * ki + kj]
+                        near = True
+                        if (self.gene_t(h, ki, NT_SEGMENTAL) >= 0.5
+                                and self.gene_t(h, kj, NT_SEGMENTAL) >= 0.5):
+                            near = ti.abs(self.nseg[o, i] - self.nseg[o, j]) <= 1
+                        if near and ti.random() < ti.abs(wk) / 4.0:
+                            self.pre[o, i, m] = j
+                            self.w[o, i, m] = wk * (1.0 + 0.1 * ti.randn())
+                            wsum += ti.abs(self.w[o, i, m])
+                            m += 1
+                    self.nsyn[o, i] = m
+                self.wsum[o] = wsum
+
+    @ti.func
+    def sense(self, o: int, s: int, c: int) -> ti.f32:
+        """Sense channel c at segment s of organism o."""
+        i = self.slot[o, ti.min(s, self.n[o] - 1)]
+        p = ti.cast(self.a.pos[i], ti.i32)
+        x, y = p.x, p.y
+        val = 0.0
+        if c < 4:  # change against the adapted level (stage 7a receptors), clipped
+            now = 0.0
+            if c == 0:
+                now = ti.log(ti.max(ti.cast(self.a.world.chem[H, x, y], ti.f32), 1e-6))
+            elif c == 1:
+                now = ti.log(ti.max(ti.cast(self.a.world.chem[R, x, y], ti.f32), 1e-6))
+            elif c == 2:
+                now = ti.log(ti.max(ti.cast(self.a.world.chem[O, x, y], ti.f32), 1e-6))
+            else:
+                now = ti.log(ti.max(self.a.world.light[x, y], 1e-6))
+            if self.a.adapt[i][0] != ADAPT_UNSET:
+                val = ti.min(ti.max(now - self.a.adapt[i][c], -5.0), 5.0)
+        elif c == 4:  # hunger
+            b = ti.max(ti.cast(self.a.body[i], ti.f32), 1e-12)
+            val = 1.0 - self.a.energy[i] / (self.cfg.energy_cap * b)
+        elif c == 5:  # touch: other cells here
+            val = ti.log(1.0 + ti.max(self.a.cell_cells[x, y] - self.a.ncell[i], 0.0))
+        else:  # proprioception: the bend just in front (joint s − 1; the head reads joint 1), as
+            # C. elegans motor neurons sense the curvature of the body ahead and pass the wave on
+            val = self.joint[o, ti.max(s - 1, 1)]  # joints are 1 .. n − 2
+        return val
+
+    @ti.kernel
+    def neural(self):
+        """CTRNN, tau dv/dt = -v + sum w·tanh(v_pre) + bias + gain·sense, Euler substeps; motor
+        neurons set the neural bend of their segment's joint. Upkeep: per neuron and per sum |w|."""
+        for o in range(self.cap):
+            if self.state[o] == O_ALIVE and self.nn[o] > 0:
+                h = self.slot[o, 0]
+                n = self.nn[o]
+                dt = 1.0 / NEURAL_SUBSTEPS
+                for _ in range(NEURAL_SUBSTEPS):
+                    for i in range(n):
+                        k = self.ntype[o, i]
+                        c = ti.min(ti.cast(ti.floor(self.gene_t(h, k, NT_CHANNEL)), ti.i32),
+                                   N_CHANNELS - 1)
+                        drive = self.gene_t(h, k, NT_BIAS) + self.gene_t(h, k, NT_SGAIN) * self.sense(
+                            o, self.nseg[o, i], c)
+                        for m in range(self.nsyn[o, i]):
+                            drive += self.w[o, i, m] * self.rate[o, self.pre[o, i, m]]
+                        tau = self.gene_t(h, k, NT_TAU)
+                        self.v[o, i] += dt / tau * (drive - self.v[o, i])
+                    for i in range(n):
+                        self.rate[o, i] = ti.tanh(self.v[o, i])
+                for k in ti.static(range(MAX_SEG)):
+                    self.bend[o, k] = 0.0
+                for i in range(n):
+                    # a segment's neurons bend the joint at that bead; head neurons the first one
+                    s = ti.max(self.nseg[o, i], 1)
+                    if s < self.n[o] - 1:
+                        self.bend[o, s] += self.gene_t(h, self.ntype[o, i], NT_MGAIN) * self.rate[o, i]
+                self.a.energy[h] -= self.cfg.k_neuron * n + self.cfg.k_syn * self.wsum[o]
 
     def table(self) -> dict:
         """Living organisms as numpy arrays (stats, viewer, tests)."""
@@ -365,4 +543,14 @@ class Organisms:
         return {"id": np.nonzero(alive)[0], "n": self.n.to_numpy()[alive],
                 "gen": self.a.gen.to_numpy()[heads],
                 "slot": self.slot.to_numpy()[alive], "head": self.head.to_numpy()[alive],
-                "uid": self.uid.to_numpy()[alive], "travel": self.travel.to_numpy()[alive]}
+                "uid": self.uid.to_numpy()[alive], "travel": self.travel.to_numpy()[alive],
+                "neurons": self.nn.to_numpy()[alive]}
+
+    def brain(self, o: int) -> dict:
+        """One organism's nervous system for the viewer: neuron type, segment, rate; synapses."""
+        n = int(self.nn[o])
+        pre, w, ns = self.pre.to_numpy()[o, :n], self.w.to_numpy()[o, :n], self.nsyn.to_numpy()[o, :n]
+        syn = [[int(pre[i, m]), i, round(float(w[i, m]), 3)] for i in range(n) for m in range(ns[i])]
+        return {"org": o, "segments": int(self.n[o]), "type": self.ntype.to_numpy()[o, :n].tolist(),
+                "seg": self.nseg.to_numpy()[o, :n].tolist(),
+                "rate": [round(float(r), 3) for r in self.rate.to_numpy()[o, :n]], "syn": syn}
