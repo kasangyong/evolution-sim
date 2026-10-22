@@ -138,3 +138,19 @@ def test_long_runs_keep_a_thinned_but_complete_past(tmp_path):
     assert len(recent) >= 15  # the recent window stays dense
     for lo in range(0, 100_000, 10_000):  # every tenth of the run still has a record
         assert any(lo <= t < lo + 10_000 for t in ticks), lo
+
+
+def test_frame_spacing_follows_writer_load(tmp_path):
+    h = History(tmp_path, Config())
+    assert h.frame_spacing == h.frame_every
+    h.adapt(0.9)  # busy: frames twice as far apart
+    h.adapt(0.9)
+    assert h.frame_spacing == 4 * h.frame_every
+    h.adapt(0.5)  # in between: hold
+    assert h.frame_spacing == 4 * h.frame_every
+    h.adapt(0.1)  # idle: back toward every frame
+    assert h.frame_spacing == 2 * h.frame_every
+    for _ in range(20):
+        h.adapt(1.0)
+    assert h.frame_spacing == 64 * h.frame_every  # capped
+

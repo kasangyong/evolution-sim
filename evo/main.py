@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to allow other devices on the LAN")
     ap.add_argument("--history", default="", help="time-machine folder (default runs/history/<time>-seed<N>)")
     ap.add_argument("--budget-gb", type=float, default=20.0, help="disk budget for the time machine")
+    ap.add_argument("--resume", default="", metavar="SNAPSHOT",
+                    help="continue from a time-machine snapshot (runs/history/<run>/b<id>/snaps/<tick>.npz)")
     args = ap.parse_args()
 
     if args.arch == "cuda":
@@ -41,9 +43,25 @@ def main():
 
     from evo.sim import Sim
 
-    cfg = Config()
-    cfg.world.seed = args.seed
-    sim = Sim(cfg)
+    if args.resume:
+        import json
+        from pathlib import Path
+
+        import numpy as np
+
+        from evo.io.snapshot import config_from_json, restore
+
+        snap = Path(args.resume)
+        meta = json.loads((snap.parents[2] / "meta.json").read_text())
+        sim = Sim(config_from_json(json.dumps(meta["config"])))
+        with np.load(snap) as z:
+            restore(sim, {k: z[k] for k in z.files})
+        args.seed = sim.cfg.world.seed
+        print(f"resumed {snap} at tick {sim.tick:,}")
+    else:
+        cfg = Config()
+        cfg.world.seed = args.seed
+        sim = Sim(cfg)
 
     if args.headless:
         headless(sim, args.headless)

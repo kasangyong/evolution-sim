@@ -426,7 +426,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
                 "tick": sim.tick, "ts": float(w.clim[CL_TS]), "ice": float(w.clim[CL_ICE]),
                 "o2": float(w.atm[ATM_O]), "ch4": float(w.atm[ATM_M]), "co2": float(w.atm[ATM_C]),
                 "slots": int(sim.life.count())})
-            next_rec = (sim.tick // history.frame_every + 1) * history.frame_every
+            next_rec = (sim.tick // history.frame_spacing + 1) * history.frame_spacing
 
     w.update_light_temp()  # the first frame (tick 0) would otherwise be drawn before any light
     record()
@@ -532,6 +532,8 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
                 "buried": float(w.acc[BUR_ORG]), "err": err.worst(), "life": life,
                 "history": history_list, "branch": history.current, "temp_layer": TEMP_LAYER,
                 "notice": notice, "rec_dropped": history.dropped, "rec_errors": history.errors,
+                "rec_queue_peak": history.queue_peak, "rec_frame_spacing": history.frame_spacing,
+                "rec_busy": history.busy / max(time.perf_counter() - history.started, 1e-9),
             }
             frame = png(rgb)
             body = json.dumps(stats).encode()

@@ -12,6 +12,7 @@ compression run on a background thread; the main thread only hands over numpy co
 import json
 import queue
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ CELL_DTYPE = np.dtype([("x", "<u2"), ("y", "<u2"), ("size", "<f2"), ("ncell", "<
                        ("vx", "<f2"), ("vy", "<f2"), ("species", "<u4"), ("event", "u1"),
                        ("colony", "u1")])
 POS_SCALE = 64.0  # positions stored as u16 in 1/64 grid cells
+BUSY_HIGH, BUSY_LOW, ADAPT_WINDOW = 0.7, 0.3, 60.0  # writer load bounds, window in seconds
 SHARE = {"frame": 0.6, "snap": 0.4}  # budget split, so big snapshots cannot starve frames
 
 
@@ -68,6 +70,13 @@ class History:
         self.sizes: dict[Path, int] = {}
         self.dropped = 0  # records skipped because the writer fell behind (queue full)
         self.errors = 0  # records that failed to write (e.g. disk full)
+        self.queue_peak = 0  # deepest the queue has been (64 = full)
+        self.busy = 0.0  # seconds the writer spent writing and thinning
+        self.started = time.perf_counter()
+        # frame spacing follows the writer's load: frames come per tick, so a faster world means
+        # more writing (stage 7a evaluation); ×2 while the writer is busy > BUSY_HIGH of the time
+        self.frame_step = 1
+        self._window = (time.perf_counter(), 0.0)  # (start, busy seconds) of the current window
         self.coarse = {"frame": 1, "snap": 1}  # spacing multiplier, doubled while over budget
         self.current = 0
         self._save_branches()
@@ -79,8 +88,22 @@ class History:
         # never block the simulation: if the writer falls behind, skip this record
         try:
             self.q.put_nowait(item)
+            self.queue_peak = max(self.queue_peak, self.q.qsize())
         except queue.Full:
             self.dropped += 1
+
+    @property
+    def frame_spacing(self) -> int:
+        """Ticks between frame records now (a multiple of frame_every)."""
+        return self.frame_every * self.frame_step
+
+    def adapt(self, busy_frac: float):
+        """Double the frame spacing when the writer is busy most of the time, halve it back when
+        it is mostly idle (up to 64 × frame_every)."""
+        if busy_frac > BUSY_HIGH and self.frame_step < 64:
+            self.frame_step *= 2
+        elif busy_frac < BUSY_LOW and self.frame_step > 1:
+            self.frame_step //= 2
 
     def record_frame(self, tick: int, rgb: np.ndarray, cell_rows: np.ndarray, stats: dict):
         self._put(("frame", self.current, tick, {"rgb": rgb, "cells": pack_cells(cell_rows),
@@ -151,10 +174,13 @@ class History:
     def _writer(self):
         while True:
             kind, branch, tick, payload = self.q.get()
+            t0 = time.perf_counter()
             p = self.path(kind, branch, tick)
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                np.savez_compressed(p, **payload)
+                # snapshots stay uncompressed: on a full pool zlib saves 16% (121 -> 102 MB) but takes
+                # 5.7 s instead of 0.16 s, and the writer fell behind (S3 run 2); frames halve, 0.25 s
+                (np.savez_compressed if kind == "frame" else np.savez)(p, **payload)
                 with self.lock:
                     (self.frames if kind == "frame" else self.snaps)[branch].append(tick)
                     self.sizes[p] = p.stat().st_size
@@ -170,6 +196,14 @@ class History:
                     except OSError:
                         pass
             finally:
+                now = time.perf_counter()
+                self.busy += now - t0
+                start, busy = self._window
+                busy += now - t0
+                if now - start >= ADAPT_WINDOW:
+                    self.adapt(busy / (now - start))
+                    start, busy = now, 0.0
+                self._window = (start, busy)
                 self.q.task_done()
 
     def flush(self):
