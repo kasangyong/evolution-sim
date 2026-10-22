@@ -9,14 +9,17 @@ import numpy as np
 from evo.config import ChemConfig, ClimateConfig, Config, LifeConfig, WorldConfig
 from evo.world.ledger import Totals
 
-SCHEMA_VERSION = 5  # 2: stage 6 (adhesion gene); 3: 7a (12-input brain, senses); 4: 7b bodies;
-# 5: 7c neural genes. Nervous systems are not stored: on restore they regrow from the genes
-# (development draws new synapse noise, like a re-run on the GPU: same genes, not the same run)
+SCHEMA_VERSION = 6  # 2: stage 6 (adhesion gene); 3: 7a (12-input brain, senses); 4: 7b bodies;
+# 5: 7c neural genes; 6: organisms and their nervous systems stored, compacted (living organisms
+# and the pool neurons they use only), so a rewind keeps each circuit (and, in 7d, what it learned)
 WORLD_FIELDS = ("chem", "atm", "clim", "acc")
 AGENT_FIELDS = ("state", "pos", "body", "energy", "age", "ncell", "uid", "parent", "genome", "free",
                 "act", "species", "adapt", "heading", "org", "seg", "metab_frac", "gen")
+# per-organism rows (schema 6 keeps the rows of living organisms only); free-lists are rebuilt
 ORG_FIELDS = ("state", "n", "slot", "suid", "head", "psi", "phase", "turn", "turn_sign", "uid",
-              "travel", "free")
+              "travel", "dirty", "nn", "nidx", "wsum", "bend", "bend_prev", "joint")
+OLD_ORG_FIELDS = ORG_FIELDS[:11]  # what schemas 4-5 stored (in full)
+NEURON_FIELDS = ("ntype", "nseg", "v", "rate", "nsyn", "pre", "w")
 
 
 def capture(sim) -> dict:
@@ -24,9 +27,16 @@ def capture(sim) -> dict:
     w, a = sim.world, sim.life
     out = {f"world.{k}": getattr(w, k).to_numpy() for k in WORLD_FIELDS}
     out.update({f"life.{k}": getattr(a, k).to_numpy() for k in AGENT_FIELDS})
-    out.update({f"org.{k}": getattr(a.orgs, k).to_numpy() for k in ORG_FIELDS})
-    out["org.top"] = np.array(a.orgs.top[None], np.int64)
-    out["org.next_uid"] = np.array(a.orgs.next_uid[None], np.int64)
+    o = a.orgs
+    ids = np.nonzero(o.state.to_numpy() == 1)[0]
+    out["org.ids"] = ids
+    out.update({f"org.{k}": getattr(o, k).to_numpy()[ids] for k in ORG_FIELDS})
+    nn, nidx = out["org.nn"], out["org.nidx"]
+    used = np.concatenate([nidx[r, :nn[r]] for r in range(len(ids))]) if len(ids) else np.zeros(
+        0, np.int32)
+    out["neu.ids"] = used.astype(np.int32)
+    out.update({f"neu.{k}": getattr(o, k).to_numpy()[used] for k in NEURON_FIELDS})
+    out["org.next_uid"] = np.array(o.next_uid[None], np.int64)
     out["life.top"] = np.array(a.top[None], np.int64)
     out["life.next_uid"] = np.array(a.next_uid[None], np.int64)
     out["sim.tick"] = np.array(sim.tick, np.int64)
@@ -38,9 +48,10 @@ def capture(sim) -> dict:
 def upgrade(arrays: dict, sim) -> dict:
     """An older snapshot as the current schema: genes appended since then take their founder
     values (schema 3: no body plan, schema 4: no neurons); schema 3 also gets every slot as a free
-    cell and an empty organism table. Lets a recorded world run on with the new abilities possible."""
+    cell and no organisms; schemas 4-5 keep their organisms, whose nerves regrow from the genes.
+    Lets a recorded world run on with the new abilities possible."""
     version = int(arrays["schema_version"])
-    if version not in (3, 4):
+    if version not in (3, 4, 5):
         return arrays
     from evo.life.genome import FOUNDER, N_GENES
 
@@ -48,16 +59,25 @@ def upgrade(arrays: dict, sim) -> dict:
     g = arrays["life.genome"]
     tail = np.broadcast_to(np.array(FOUNDER[g.shape[1]:], np.float32), (len(g), N_GENES - g.shape[1]))
     out["life.genome"] = np.ascontiguousarray(np.concatenate([g, tail], axis=1))
+    o = sim.life.orgs
     if version == 3:
         cap = len(g)
         out["life.org"] = np.full(cap, -1, np.int32)
         out["life.seg"] = np.zeros(cap, np.int32)
         out["life.metab_frac"] = np.ones(cap, np.float32)
         out["life.gen"] = np.zeros(cap, np.int32)
-        o = sim.life.orgs
-        out.update({f"org.{k}": getattr(o, k).to_numpy() for k in ORG_FIELDS})  # fresh, empty
-        out["org.top"] = np.array(o.top[None], np.int64)
+        ids = np.zeros(0, np.int64)
         out["org.next_uid"] = np.array(o.next_uid[None], np.int64)
+    else:
+        ids = np.nonzero(arrays["org.state"] == 1)[0]
+    rows = {k: arrays[f"org.{k}"][ids] for k in OLD_ORG_FIELDS} if version != 3 else {}
+    out["org.ids"] = ids
+    for k in ORG_FIELDS:
+        full = getattr(o, k).to_numpy()
+        out[f"org.{k}"] = rows.get(k, np.zeros((len(ids), *full.shape[1:]), full.dtype))
+    out["org.dirty"] = np.ones(len(ids), np.int32)  # their nervous systems regrow
+    out["neu.ids"] = np.zeros(0, np.int32)
+    out.update({f"neu.{k}": getattr(o, k).to_numpy()[:0] for k in NEURON_FIELDS})
     out["schema_version"] = np.array(SCHEMA_VERSION, np.int64)
     return out
 
@@ -72,14 +92,19 @@ def restore(sim, arrays: dict) -> None:
         getattr(w, k).from_numpy(arrays[f"world.{k}"])
     for k in AGENT_FIELDS:
         getattr(a, k).from_numpy(arrays[f"life.{k}"])
-    for k in ORG_FIELDS:
-        getattr(a.orgs, k).from_numpy(arrays[f"org.{k}"])
-    a.orgs.top[None] = int(arrays["org.top"])
-    a.orgs.dirty.from_numpy((arrays["org.state"] == 1).astype(np.int32))  # nerves regrow
-    a.orgs.nn.fill(0)
-    a.orgs.bend.fill(0.0)
-    a.orgs.bend_prev.fill(0.0)
-    a.orgs.next_uid[None] = int(arrays["org.next_uid"])
+    o = a.orgs
+    for prefix, names, cap in (("org", ORG_FIELDS, o.cap), ("neu", NEURON_FIELDS, o.ncap)):
+        ids = arrays[f"{prefix}.ids"]
+        for k in names:  # scatter the stored rows into empty tables
+            full = np.zeros_like(getattr(o, k).to_numpy())
+            full[ids] = arrays[f"{prefix}.{k}"]
+            getattr(o, k).from_numpy(full)
+        free = np.setdiff1d(np.arange(cap), ids)[::-1].astype(np.int32)  # the rest is free
+        table = np.zeros(cap, np.int32)
+        table[:len(free)] = free
+        (o.free if prefix == "org" else o.nfree).from_numpy(table)
+        (o.top if prefix == "org" else o.ntop)[None] = len(free)
+    o.next_uid[None] = int(arrays["org.next_uid"])
     a.top[None] = int(arrays["life.top"])
     a.next_uid[None] = int(arrays["life.next_uid"])
     a.want_div.fill(0)

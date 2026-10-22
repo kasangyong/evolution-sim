@@ -15,7 +15,8 @@ def small_cfg() -> Config:
     cfg = Config()
     cfg.world.width, cfg.world.depth, cfg.world.n_vents = 128, 64, 2
     cfg.life.capacity = 8192
-    cfg.life.org_capacity = 256  # organism (and nervous system) table: ~450 MB at the default
+    cfg.life.org_capacity = 256  # small tables: CPU tests build many worlds
+    cfg.life.neuron_capacity = 8192
     return cfg
 
 

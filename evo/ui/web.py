@@ -320,7 +320,8 @@ def organism_events(a) -> dict:
     if swum.any():
         places["org_swim"] = tuple(map(float, t["head"][int(np.argmax(t["travel"]))]))
     neural = t["neurons"] > 0
-    head_share = np.array([(a.orgs.nseg.to_numpy()[o, :k] == 0).mean() if k else 0.0
+    nseg, nidx = a.orgs.nseg.to_numpy(), a.orgs.nidx.to_numpy()
+    head_share = np.array([(nseg[nidx[o, :k]] == 0).mean() if k else 0.0
                            for o, k in zip(t["id"], t["neurons"])])
     central = (t["neurons"] >= 8) & (head_share > 0.5)
     if neural.any():
@@ -329,7 +330,8 @@ def organism_events(a) -> dict:
         places["central"] = tuple(map(float, t["head"][int(np.argmax(t["neurons"] * central))]))
     return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
             "org_swimmers": int(swum.sum()), "org_neural": int(neural.sum()),
-            "org_central": int(central.sum()), "places_org": places}
+            "org_central": int(central.sum()), "places_org": places,
+            "org_refused": int(a.orgs.failed_transitions[None])}
 
 
 ORG_LIST = 30  # organisms sent to the viewer (longest bodies first), for the follow camera
@@ -343,6 +345,9 @@ def organism_summary(a) -> dict:
     order = np.lexsort((-t["travel"], -t["n"]))[:ORG_LIST]
     return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
             "org_neurons_max": int(t["neurons"].max()),
+            "org_refused": int(a.orgs.failed_transitions[None]),
+            "neurons_refused": int(a.orgs.failed_neurons[None]),
+            "neurons_used": a.orgs.ncap - int(a.orgs.ntop[None]),
             "org_list": [[int(t["id"][k]), int(t["n"][k]), float(t["head"][k, 0]),
                           float(t["head"][k, 1]), float(t["travel"][k])] for k in order]}
 

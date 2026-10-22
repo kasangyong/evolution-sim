@@ -118,3 +118,10 @@ def test_nervous_system_events():
     assert {"neurons", "central"} <= set(got)
     assert not {"neurons", "central"} & set(kinds(d, replace(BASE, tick=4000, orgs=2, org_neural=2,
                                                             org_central=1)))
+
+
+def test_a_full_organism_table_is_reported_once():
+    d = EventDetector()
+    kinds(d, BASE)
+    assert "org_full" in kinds(d, replace(BASE, tick=2000, org_refused=5))
+    assert "org_full" not in kinds(d, replace(BASE, tick=4000, org_refused=9))

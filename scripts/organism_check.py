@@ -89,4 +89,5 @@ while sim.tick < ticks:
     print(f"tick {sim.tick:>7} organisms {len(n):>5} longest {n.max() if len(n) else 0:>2} "
           f"mean seg {n.mean() if len(n) else 0:4.1f} generation max {gen.max() if len(gen) else 0:>3} "
           f"max swum {travel.max() if len(travel) else 0:6.1f} cells {a.cells():.3g} "
-          f"err {sim.budget_error().worst():.1e}", flush=True)
+          f"refused {o.failed_transitions[None]} neurons {o.ncap - o.ntop[None]} (refused "
+          f"{o.failed_neurons[None]}) err {sim.budget_error().worst():.1e}", flush=True)

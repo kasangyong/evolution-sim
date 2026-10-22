@@ -46,6 +46,7 @@ class Summary:
     # stage 7c: organisms with neurons; with a central brain (≥ 8 neurons, most in the head)
     org_neural: int = 0
     org_central: int = 0
+    org_refused: int = 0  # colonies refused so far because the organism table was full
 
 
 ABILITIES = (  # (summary field, kind, threshold, re-arm below, Korean name, what it means)
@@ -153,6 +154,12 @@ class EventDetector:
                             f"뉴런 8개 이상 중 절반 넘게가 머리에 모인 생물체가 생겼습니다"
                             f"({s.org_central}마리). 신경이 한곳에 모이는 중추화입니다.", nums,
                             s.places.get("central")))
+
+        if self._fire("org_full", s.org_refused > 0, False):
+            ev.append(Event(s.tick, "org_full", "생물체 표 가득 참(계산 상한)",
+                            f"생물체 표가 가득 차 군체 {s.org_refused:,}개가 생물체가 되지 못했습니다. "
+                            "자연선택이 아니라 계산 상한에 걸린 것입니다(개체 풀 상한과 같은 종류).",
+                            nums))
 
         total = max(sum(c for c, _, _ in s.species.values()), 1.0)
         now_major = {sid for sid, (c, _, _) in s.species.items() if c >= 0.05 * total}

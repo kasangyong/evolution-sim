@@ -19,7 +19,8 @@ keeps the chain (slot and uid per segment) and does what only a body can do:
   encoding) whenever the body changes, and runs as a continuous-time recurrent network of graded
   neurons; motor neurons bend their segment's joint, sensory ones read the segment's senses
 
-Free-lists: develop and transition pop, integrity pushes (never both in one kernel, §4.6)."""
+Free-lists: develop and transition pop, integrity pushes (never both in one kernel, §4.6). The
+neuron pool (stage 7c, shared by all organisms): wire pops, integrity pushes."""
 import math
 
 import numpy as np
@@ -86,17 +87,29 @@ class Organisms:
         self.free.from_numpy(np.arange(cap - 1, -1, -1, dtype=np.int32))
         self.top[None] = cap
         self.next_uid[None] = 1
-        # stage 7c: nervous system (rebuilt when `dirty`; not stored in snapshots, see snapshot.py)
+        # stage 7c: nervous system, rebuilt when `dirty`. Neurons live in one pool shared by all
+        # organisms (an organism holds the pool ids of its neurons, local index -> id), so memory
+        # follows the neurons that exist, not 256 per organism (stage 7c evaluation)
         self.dirty = ti.field(ti.i32, shape=cap)
         self.nn = ti.field(ti.i32, shape=cap)  # neurons
-        self.ntype = ti.field(ti.i32, shape=(cap, MAX_NEU))
-        self.nseg = ti.field(ti.i32, shape=(cap, MAX_NEU))
-        self.v = ti.field(ti.f32, shape=(cap, MAX_NEU))  # membrane potential
-        self.rate = ti.field(ti.f32, shape=(cap, MAX_NEU))  # graded output tanh(v)
-        self.nsyn = ti.field(ti.i32, shape=(cap, MAX_NEU))
-        self.pre = ti.field(ti.i32, shape=(cap, MAX_NEU, MAX_SYN))
-        self.w = ti.field(ti.f32, shape=(cap, MAX_NEU, MAX_SYN))
+        self.nidx = ti.field(ti.i32, shape=(cap, MAX_NEU))  # local neuron -> pool id
         self.wsum = ti.field(ti.f32, shape=cap)  # sum of |w|, for the upkeep
+        ncap = self.cfg.neuron_capacity
+        self.ncap = ncap
+        self.ntype = ti.field(ti.i32, shape=ncap)
+        self.nseg = ti.field(ti.i32, shape=ncap)
+        self.v = ti.field(ti.f32, shape=ncap)  # membrane potential
+        self.rate = ti.field(ti.f32, shape=ncap)  # graded output tanh(v)
+        self.nsyn = ti.field(ti.i32, shape=ncap)
+        self.pre = ti.field(ti.i32, shape=(ncap, MAX_SYN))  # local index of the presynaptic neuron
+        self.w = ti.field(ti.f32, shape=(ncap, MAX_SYN))
+        self.nfree = ti.field(ti.i32, shape=ncap)
+        self.ntop = ti.field(ti.i32, shape=())
+        self.nfree.from_numpy(np.arange(ncap - 1, -1, -1, dtype=np.int32))
+        self.ntop[None] = ncap
+        # saturation, so a full table is visible rather than silent (stage 7c evaluation)
+        self.failed_transitions = ti.field(ti.i64, shape=())  # colonies refused: table full
+        self.failed_neurons = ti.field(ti.i64, shape=())  # neurons not grown: pool full
         self.bend = ti.field(ti.f32, shape=(cap, MAX_SEG))  # neural bend of each joint, now
         self.bend_prev = ti.field(ti.f32, shape=(cap, MAX_SEG))
         self.joint = ti.field(ti.f32, shape=(cap, MAX_SEG))  # joint angles (proprioception)
@@ -380,6 +393,11 @@ class Organisms:
                     i = self.slot[o, k]
                     if not (self.a.state[i] == ALIVE and self.a.uid[i] == self.suid[o, k]):
                         cut = ti.min(cut, k)
+                if cut < n or self.dirty[o] == 1:  # a changed body regrows its nerves: release
+                    for i in range(self.nn[o]):
+                        self.nfree[ti.atomic_add(self.ntop[None], 1)] = self.nidx[o, i]
+                    self.nn[o] = 0
+                    self.dirty[o] = 1
                 if cut < n:
                     for k in range(cut, n):  # the rest falls off as plain colonies
                         i = self.slot[o, k]
@@ -404,9 +422,11 @@ class Organisms:
                 old = ti.atomic_sub(self.top[None], 1)
                 if old <= 0:
                     ti.atomic_add(self.top[None], 1)
+                    ti.atomic_add(self.failed_transitions[None], 1)  # the table is full
                 else:
                     o = self.free[old - 1]
                     self.state[o] = O_ALIVE
+                    self.nn[o] = 0
                     self.n[o] = 1
                     self.slot[o, 0] = i
                     self.suid[o, 0] = self.a.uid[i]
@@ -432,10 +452,10 @@ class Organisms:
     @ti.kernel
     def wire(self):
         """Development of the nervous system (developmental encoding): neurons of each type in the
-        head, or in every segment, then each neuron draws `density` candidate inputs and keeps one
-        from type l with probability |W[k, l]| / 4 at strength W[k, l] × (1 + 0.1·noise).
-        Segmental types connect only within a segment or to the next. Same genome, slightly
-        different circuit: individual variation."""
+        head, or in every segment, taken from the shared pool (pops only), then each neuron draws
+        `density` candidate inputs and keeps one from type l with probability |W[k, l]| / 4 at
+        strength W[k, l] × (1 + 0.1·noise). Segmental types connect only within a segment or to
+        the next. Same genome, slightly different circuit: individual variation."""
         for o in range(self.cap):
             if self.state[o] == O_ALIVE and self.dirty[o] == 1:
                 self.dirty[o] = 0
@@ -449,31 +469,40 @@ class Organisms:
                     for s in range(segs):
                         for _ in range(cnt):
                             if n < MAX_NEU:
-                                self.ntype[o, n] = k
-                                self.nseg[o, n] = s
-                                self.v[o, n] = 0.0
-                                self.rate[o, n] = 0.0
-                                n += 1
+                                old = ti.atomic_sub(self.ntop[None], 1)
+                                if old <= 0:
+                                    ti.atomic_add(self.ntop[None], 1)
+                                    ti.atomic_add(self.failed_neurons[None], 1)  # pool full
+                                else:
+                                    g = self.nfree[old - 1]
+                                    self.nidx[o, n] = g
+                                    self.ntype[g] = k
+                                    self.nseg[g] = s
+                                    self.v[g] = 0.0
+                                    self.rate[g] = 0.0
+                                    n += 1
                 self.nn[o] = n
                 wsum = 0.0
                 for i in range(n):
-                    ki = self.ntype[o, i]
+                    g = self.nidx[o, i]
+                    ki = self.ntype[g]
                     m = 0
                     dens = ti.min(ti.cast(ti.round(self.gene_t(h, ki, NT_DENSITY)), ti.i32), MAX_SYN)
                     for _ in range(dens):
                         j = ti.min(ti.cast(ti.random() * n, ti.i32), n - 1)
-                        kj = self.ntype[o, j]
+                        gj = self.nidx[o, j]
+                        kj = self.ntype[gj]
                         wk = self.a.genome[h, CONN + N_TYPES * ki + kj]
                         near = True
                         if (self.gene_t(h, ki, NT_SEGMENTAL) >= 0.5
                                 and self.gene_t(h, kj, NT_SEGMENTAL) >= 0.5):
-                            near = ti.abs(self.nseg[o, i] - self.nseg[o, j]) <= 1
+                            near = ti.abs(self.nseg[g] - self.nseg[gj]) <= 1
                         if near and ti.random() < ti.abs(wk) / 4.0:
-                            self.pre[o, i, m] = j
-                            self.w[o, i, m] = wk * (1.0 + 0.1 * ti.randn())
-                            wsum += ti.abs(self.w[o, i, m])
+                            self.pre[g, m] = j
+                            self.w[g, m] = wk * (1.0 + 0.1 * ti.randn())
+                            wsum += ti.abs(self.w[g, m])
                             m += 1
-                    self.nsyn[o, i] = m
+                    self.nsyn[g] = m
                 self.wsum[o] = wsum
 
     @ti.func
@@ -516,24 +545,27 @@ class Organisms:
                 dt = 1.0 / NEURAL_SUBSTEPS
                 for _ in range(NEURAL_SUBSTEPS):
                     for i in range(n):
-                        k = self.ntype[o, i]
+                        g = self.nidx[o, i]
+                        k = self.ntype[g]
                         c = ti.min(ti.cast(ti.floor(self.gene_t(h, k, NT_CHANNEL)), ti.i32),
                                    N_CHANNELS - 1)
                         drive = self.gene_t(h, k, NT_BIAS) + self.gene_t(h, k, NT_SGAIN) * self.sense(
-                            o, self.nseg[o, i], c)
-                        for m in range(self.nsyn[o, i]):
-                            drive += self.w[o, i, m] * self.rate[o, self.pre[o, i, m]]
+                            o, self.nseg[g], c)
+                        for m in range(self.nsyn[g]):
+                            drive += self.w[g, m] * self.rate[self.nidx[o, self.pre[g, m]]]
                         tau = self.gene_t(h, k, NT_TAU)
-                        self.v[o, i] += dt / tau * (drive - self.v[o, i])
+                        self.v[g] += dt / tau * (drive - self.v[g])
                     for i in range(n):
-                        self.rate[o, i] = ti.tanh(self.v[o, i])
+                        g = self.nidx[o, i]
+                        self.rate[g] = ti.tanh(self.v[g])
                 for k in ti.static(range(MAX_SEG)):
                     self.bend[o, k] = 0.0
                 for i in range(n):
+                    g = self.nidx[o, i]
                     # a segment's neurons bend the joint at that bead; head neurons the first one
-                    s = ti.max(self.nseg[o, i], 1)
+                    s = ti.max(self.nseg[g], 1)
                     if s < self.n[o] - 1:
-                        self.bend[o, s] += self.gene_t(h, self.ntype[o, i], NT_MGAIN) * self.rate[o, i]
+                        self.bend[o, s] += self.gene_t(h, self.ntype[g], NT_MGAIN) * self.rate[g]
                 self.a.energy[h] -= self.cfg.k_neuron * n + self.cfg.k_syn * self.wsum[o]
 
     def table(self) -> dict:
@@ -549,8 +581,13 @@ class Organisms:
     def brain(self, o: int) -> dict:
         """One organism's nervous system for the viewer: neuron type, segment, rate; synapses."""
         n = int(self.nn[o])
-        pre, w, ns = self.pre.to_numpy()[o, :n], self.w.to_numpy()[o, :n], self.nsyn.to_numpy()[o, :n]
+        g = self.nidx.to_numpy()[o, :n]
+        pre, w, ns = self.pre.to_numpy()[g], self.w.to_numpy()[g], self.nsyn.to_numpy()[g]
         syn = [[int(pre[i, m]), i, round(float(w[i, m]), 3)] for i in range(n) for m in range(ns[i])]
-        return {"org": o, "segments": int(self.n[o]), "type": self.ntype.to_numpy()[o, :n].tolist(),
-                "seg": self.nseg.to_numpy()[o, :n].tolist(),
-                "rate": [round(float(r), 3) for r in self.rate.to_numpy()[o, :n]], "syn": syn}
+        return {"org": o, "segments": int(self.n[o]), "type": self.ntype.to_numpy()[g].tolist(),
+                "seg": self.nseg.to_numpy()[g].tolist(),
+                "rate": [round(float(r), 3) for r in self.rate.to_numpy()[g]], "syn": syn}
+
+    def neurons_of(self, o: int) -> np.ndarray:
+        """Pool ids of organism o's neurons (tests, viewer)."""
+        return self.nidx.to_numpy()[o, :int(self.nn[o])]

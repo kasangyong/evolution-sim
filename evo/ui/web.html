@@ -286,7 +286,7 @@ async function pollStats() {
       ["세포 수", fmt(L.cells, 0)], ["슬롯(묶음)", fmt(L.pop, 0)], ["빛 받는 슬롯", fmt(L.photic, 0)],
       ["바이오매스", fmt(L.biomass)], ["η 수소 화학합성", fmt(L.eta_h2)], ["η 비산소 광합성", fmt(L.eta_photo_an)],
       ["η 산소 광합성", fmt(L.eta_photo_ox)], ["η 포식", fmt(L.eta_pred)], ["헤엄 속도", fmt(L.speed)],
-      ["다세포 생물체", fmt(L.orgs || 0, 0) + (L.orgs ? ` (가장 긴 몸 ${L.org_seg_max}마디, 가장 큰 신경계 ${L.org_neurons_max}뉴런)` : "")],
+      ["다세포 생물체", fmt(L.orgs || 0, 0) + (L.orgs ? ` (가장 긴 몸 ${L.org_seg_max}마디, 가장 큰 신경계 ${L.org_neurons_max}뉴런)` : "") + (L.org_refused ? ` · 표가 가득 차 못 된 군체 ${fmt(L.org_refused, 0)}` : "")],
     ]);
     orgList = L.org_list || [];
     kv($("climkv"), [

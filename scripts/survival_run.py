@@ -63,5 +63,7 @@ print(f"seed {seed:>2} {status:<14} pop {sim.life.count():>6} min_pop {min_pop:>
       f"min_cells {min_cells:.3g} worst_err {worst:.1e} {time.perf_counter() - t:.0f}s | photic {photic} first_photo "
       f"{first_photo} dark {sim.life.count() - photic} cells {sim.life.cells():.3g} body {body:.3f} {photo} O2 {o2:.3g} | "
       f"{genes} | orgs {sim.life.orgs.count()} first_org {first_org} max_orgs {max_orgs} "
-      f"max_seg {max_seg} max_swum {max_swum:.1f} max_neurons {max_neurons} neural_orgs {neural_orgs}",
+      f"max_seg {max_seg} max_swum {max_swum:.1f} max_neurons {max_neurons} neural_orgs {neural_orgs} "
+      f"org_refused {sim.life.orgs.failed_transitions[None]} neurons_refused "
+      f"{sim.life.orgs.failed_neurons[None]}",
       flush=True)

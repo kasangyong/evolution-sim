@@ -126,7 +126,8 @@ class LifeConfig:
     # stage 7a: nerves and receptors cost energy in proportion to the connection strengths
     k_brain: float = 3.0e-5  # per unit body per unit Σ|weight| (≈1% of maintenance per weight)
     # stage 7b: multicellular organisms (stage7b-arch.md, 7b 구현 결정)
-    org_capacity: int = 8192  # organism records; each segment is one slot of the pool above
+    org_capacity: int = 65536  # organism records; each segment is one slot of the pool above
+    neuron_capacity: int = 262144  # neurons shared by all organisms (~55 MB with synapses)
     org_min_cells: float = 16.0  # a differentiating colony this big becomes an organism
     seg_len: float = 0.5  # segment length (grid cells)
     drag_t: float = 1.0  # resistive force per unit velocity along a segment
