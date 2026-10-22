@@ -177,3 +177,18 @@ def test_a_stage_7a_snapshot_runs_on_with_bodies_possible(small_cfg):
     assert (sim2.life.org.to_numpy() == -1).all() and sim2.life.orgs.count() == 0
     sim2.step(50)
     assert sim2.budget_error().worst() < 1e-9
+
+
+def test_a_nearly_full_drive_stops_recording_and_says_so(tmp_path, monkeypatch):
+    from evo.io import history as hmod
+
+    h = History(tmp_path, Config())
+    monkeypatch.setattr(History, "free_bytes", lambda self: hmod.DISK_RESERVE - 1)
+    h.record_frame(0, np.zeros((4, 4, 3), np.uint8), np.zeros((3, 17), np.float32), {"tick": 0})
+    h.flush()
+    assert h.disk_skipped == 1 and h.frame_ticks() == [] and h.errors == 0
+    monkeypatch.setattr(History, "free_bytes", lambda self: hmod.DISK_RESERVE + 10**12)
+    h.record_frame(100, np.zeros((4, 4, 3), np.uint8), np.zeros((3, 17), np.float32), {"tick": 100})
+    h.flush()
+    assert h.frame_ticks() == [100]
+    assert h.effective_budget() == h.budget  # plenty of room: the configured budget

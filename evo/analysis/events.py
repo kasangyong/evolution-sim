@@ -47,6 +47,7 @@ class Summary:
     org_neural: int = 0
     org_central: int = 0
     org_refused: int = 0  # colonies refused so far because the organism table was full
+    org_learning: int = 0  # stage 7d: organisms whose synapses changed by experience
 
 
 ABILITIES = (  # (summary field, kind, threshold, re-arm below, Korean name, what it means)
@@ -155,6 +156,12 @@ class EventDetector:
                             f"({s.org_central}마리). 신경이 한곳에 모이는 중추화입니다.", nums,
                             s.places.get("central")))
 
+        if self._fire("learning", s.org_learning > 0, s.org_learning == 0):
+            ev.append(Event(s.tick, "learning", "살면서 배우기",
+                            f"경험으로 시냅스가 바뀐 생물체가 생겼습니다({s.org_learning}마리). 조절 "
+                            "뉴런의 신호(도파민 같은)가 켜질 때 함께 켜진 연결이 강해지거나 "
+                            "약해졌습니다. 배운 것은 자손에게 물려주지 않습니다.", nums,
+                            s.places.get("learning")))
         if self._fire("org_full", s.org_refused > 0, False):
             ev.append(Event(s.tick, "org_full", "생물체 표 가득 참(계산 상한)",
                             f"생물체 표가 가득 차 군체 {s.org_refused:,}개가 생물체가 되지 못했습니다. "

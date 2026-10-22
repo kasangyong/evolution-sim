@@ -4,9 +4,11 @@ import taichi as ti
 from evo.config import Config, D, M, O
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def taichi_cpu():
-    # single thread: deterministic atomics (S1)
+    # single thread: deterministic atomics (S1). A fresh runtime per test frees the previous
+    # worlds' fields and compiled kernels (each Sim compiles its own; a whole-suite runtime ran
+    # out of memory in stage 7d) and gives every test the same RNG state
     ti.init(arch=ti.cpu, cpu_max_num_threads=1, random_seed=0, log_level=ti.WARN)
 
 

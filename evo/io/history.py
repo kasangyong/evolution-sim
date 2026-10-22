@@ -11,6 +11,7 @@ A branch's timeline is its ancestors' records up to its fork tick, then its own.
 compression run on a background thread; the main thread only hands over numpy copies."""
 import json
 import queue
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -25,7 +26,9 @@ CELL_DTYPE = np.dtype([("x", "<u2"), ("y", "<u2"), ("size", "<f2"), ("ncell", "<
                        ("colony", "u1"), ("org", "<u2"), ("seg", "u1")])
 POS_SCALE = 64.0  # positions stored as u16 in 1/64 grid cells
 BUSY_HIGH, BUSY_LOW, ADAPT_WINDOW = 0.7, 0.3, 60.0  # writer load bounds, window in seconds
-SHARE = {"frame": 0.6, "snap": 0.4}  # budget split, so big snapshots cannot starve frames
+SHARE = {"frame": 0.6, "snap": 0.4}
+DISK_RESERVE = 5 * 1024**3  # free space always left on the drive (stage 7d evaluation: a full
+# disk also starves gate logs, the event journal and the page file)  # budget split, so big snapshots cannot starve frames
 
 
 def pack_cells(rows: np.ndarray) -> np.ndarray:
@@ -73,6 +76,7 @@ class History:
         self.dropped = 0  # records skipped because the writer fell behind (queue full)
         self.errors = 0  # records that failed to write (e.g. disk full)
         self.queue_peak = 0  # deepest the queue has been (64 = full)
+        self.disk_skipped = 0  # records not written because the drive is nearly full
         self.busy = 0.0  # seconds the writer spent writing and thinning
         self.started = time.perf_counter()
         # frame spacing follows the writer's load: frames come per tick, so a faster world means
@@ -179,6 +183,11 @@ class History:
             t0 = time.perf_counter()
             p = self.path(kind, branch, tick)
             try:
+                if self.free_bytes() < DISK_RESERVE:  # thinning could not keep up: stop, say so
+                    self._thin()
+                    if self.free_bytes() < DISK_RESERVE:
+                        self.disk_skipped += 1
+                        continue
                 p.parent.mkdir(parents=True, exist_ok=True)
                 # snapshots stay uncompressed: on a full pool zlib saves 16% (121 -> 102 MB) but takes
                 # 5.7 s instead of 0.16 s, and the writer fell behind (S3 run 2); frames halve, 0.25 s
@@ -186,7 +195,7 @@ class History:
                 with self.lock:
                     (self.frames if kind == "frame" else self.snaps)[branch].append(tick)
                     self.sizes[p] = p.stat().st_size
-                if self.used_bytes() > self.budget:
+                if self.used_bytes() > self.effective_budget():
                     self._thin()
             except Exception:  # noqa: BLE001 - the writer must outlive any single bad record
                 # one failed write (disk full, file in use, out of memory) must not kill the writer;
@@ -207,6 +216,14 @@ class History:
                     start, busy = now, 0.0
                 self._window = (start, busy)
                 self.q.task_done()
+
+    def free_bytes(self) -> int:
+        return shutil.disk_usage(self.root).free
+
+    def effective_budget(self) -> int:
+        """The configured budget, or less when the drive has less room: what this history already
+        uses plus what is free beyond the reserve."""
+        return min(self.budget, self.used_bytes() + max(self.free_bytes() - DISK_RESERVE, 0))
 
     def flush(self):
         """Block until every queued record is on disk."""
@@ -240,7 +257,7 @@ class History:
         protected = self._protected()
         for kind in ("frame", "snap"):
             table = self.frames if kind == "frame" else self.snaps
-            limit = SHARE[kind] * self.budget
+            limit = SHARE[kind] * self.effective_budget()
             for _ in range(12):  # coarse can grow to 2^12 at most per call
                 if self._kind_bytes(kind) <= limit:
                     break

@@ -26,6 +26,7 @@ sim = Sim(cfg)
 t, worst, min_pop, first_photo = time.perf_counter(), 0.0, None, None
 first_org, max_orgs, max_seg, max_swum = None, 0, 0, 0.0  # stage 7b
 max_neurons, neural_orgs = 0, 0  # stage 7c
+max_learned, learning_orgs = 0.0, 0  # stage 7d
 while sim.tick < ticks and sim.life.count() > 0:
     sim.step(1000)
     pop = sim.life.count()
@@ -44,6 +45,9 @@ while sim.tick < ticks and sim.life.count() > 0:
         max_swum = max(max_swum, float(orgs["travel"].max()))
         max_neurons = max(max_neurons, int(orgs["neurons"].max()))
         neural_orgs = max(neural_orgs, int((orgs["neurons"] > 0).sum()))
+        learned = sim.life.orgs.learned()
+        max_learned = max(max_learned, float(learned.max()))
+        learning_orgs = max(learning_orgs, int((learned > 0.1).sum()))
 snap = sim.life.snapshot()
 if "save" in opts:
     alive = sim.life.state.to_numpy() == ALIVE
@@ -65,5 +69,5 @@ print(f"seed {seed:>2} {status:<14} pop {sim.life.count():>6} min_pop {min_pop:>
       f"{genes} | orgs {sim.life.orgs.count()} first_org {first_org} max_orgs {max_orgs} "
       f"max_seg {max_seg} max_swum {max_swum:.1f} max_neurons {max_neurons} neural_orgs {neural_orgs} "
       f"org_refused {sim.life.orgs.failed_transitions[None]} neurons_refused "
-      f"{sim.life.orgs.failed_neurons[None]}",
+      f"{sim.life.orgs.failed_neurons[None]} max_learned {max_learned:.3f} learning_orgs {learning_orgs}",
       flush=True)

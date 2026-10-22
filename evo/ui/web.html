@@ -124,7 +124,7 @@
       <h2>수면 온도 (°C)</h2><canvas class="chart" id="c_temp"></canvas>
     </div>
     <div class="card wide">
-      <h2>뇌 보기 · 따라가는 생물체의 신경계 (가로 = 마디, 머리가 왼쪽 · 세로 = 뉴런 유형 · 색 = 출력: 파랑 음, 빨강 양 · 선 = 시냅스: 초록 흥분, 분홍 억제)</h2>
+      <h2>뇌 보기 · 따라가는 생물체의 신경계 (가로 = 마디, 머리가 왼쪽 · 세로 = 뉴런 유형 · 색 = 출력: 파랑 음, 빨강 양 · 선 = 시냅스: 초록 흥분, 분홍 억제, 굵을수록 살면서 많이 바뀜)</h2>
       <canvas id="brain" height="220"></canvas>
       <div id="braininfo" class="note">"생물체 따라가기"를 누르면 그 생물체의 뉴런 활동이 실시간으로 보입니다. 신경이 없는 생물체는 비어 있습니다.</div>
     </div>
@@ -214,6 +214,7 @@ async function pollIndex() {
       ? `되감기: tick ${replayT.toLocaleString()} (지질 약 ${geo(replayT)}백만 년) · '여기서 다시 실행'은 가장 가까운 저장점 tick ${s === null ? "-" : s.toLocaleString()}에서 새 갈래로 시작하며, GPU 특성상 원래와 다른 역사가 됩니다`
       : `실시간 · 기록 ${hindex.frames.length.toLocaleString()}개`) + ` · ${where} · 디스크 ${gb(hindex.used)}/${gb(hindex.budget)} GB` +
       (st && (st.rec_dropped || st.rec_errors) ? ` · 건너뛴 기록 ${st.rec_dropped}개, 쓰기 실패 ${st.rec_errors}개` : "") +
+      (st && st.rec_disk_skipped ? ` · 디스크 여유가 부족해 기록 ${st.rec_disk_skipped}개를 쓰지 않았습니다` : "") +
       (st && st.notice ? ` · ${st.notice}` : "");
   } catch (e) { /* offline */ }
   setTimeout(pollIndex, 1500);
@@ -577,9 +578,11 @@ function drawBrain(b) {
     const key = b.seg[i] * 8 + b.type[i], k = slot.get(key) || 0; slot.set(key, k + 1);
     pos.push([30 + (b.seg[i] + 0.5) / segs * (W - 60) + (k % 4) * 6 - 9, 18 + (b.type[i] + 0.5) / 8 * (H - 36) + Math.floor(k / 4) * 5]);
   }
-  for (const [pre, post, w] of b.syn) {
+  for (const [pre, post, w0, dw, res] of b.syn) {
+    const w = (w0 + (dw || 0)) * (res === undefined ? 1 : res);  // as the neuron feels it now
     g.strokeStyle = w > 0 ? `rgba(110,220,140,${Math.min(Math.abs(w) / 4, 1) * 0.5})` : `rgba(240,120,170,${Math.min(Math.abs(w) / 4, 1) * 0.5})`;
-    g.lineWidth = 1; g.beginPath(); g.moveTo(pos[pre][0], pos[pre][1]); g.lineTo(pos[post][0], pos[post][1]); g.stroke();
+    g.lineWidth = 1 + Math.min(Math.abs(dw || 0), 4);  // thick: changed by learning (stage 7d)
+    g.beginPath(); g.moveTo(pos[pre][0], pos[pre][1]); g.lineTo(pos[post][0], pos[post][1]); g.stroke();
   }
   for (let i = 0; i < n; i++) {
     const r = b.rate[i], col = r >= 0 ? `rgb(${120 + 135 * r | 0},90,80)` : `rgb(70,${90 - 40 * r | 0},${120 - 135 * r | 0})`;
@@ -587,7 +590,8 @@ function drawBrain(b) {
   }
   g.fillStyle = "rgba(200,210,220,.7)"; g.font = "11px system-ui";
   for (let s2 = 0; s2 < segs; s2++) g.fillText(s2 === 0 ? "머리" : `${s2 + 1}`, 30 + (s2 + 0.5) / segs * (W - 60) - 8, H - 4);
-  $("braininfo").textContent = `생물체 #${b.org} · ${b.segments}마디 · 뉴런 ${n}개 · 시냅스 ${b.syn.length}개 (선충 302개·약 7,000개)`;
+  const learned = b.syn.filter(s => Math.abs(s[3] || 0) > 0.05).length;
+  $("braininfo").textContent = `생물체 #${b.org} · ${b.segments}마디 · 뉴런 ${n}개 · 시냅스 ${b.syn.length}개 (선충 302개·약 7,000개) · 조절 신호 ${fmt(b.modulator || 0, 2)} · 배워서 바뀐 시냅스 ${learned}개 (굵은 선)`;
 }
 pollStats(); pollFrame(); pollCells(); pollIndex(); pollSpecies(); pollEvents(); pollBrain(); requestAnimationFrame(draw);
 </script>

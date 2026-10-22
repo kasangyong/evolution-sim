@@ -1,4 +1,4 @@
-"""Genome layout (§3, stage 7c; new genes are appended so indices stay stable). Genes
+"""Genome layout (§3, stage 7d; new genes are appended so indices stay stable). Genes
 are stored directly in trait units and clamped to their range after mutation; mutation noise
 is scaled by each trait's range."""
 
@@ -28,7 +28,11 @@ N_TYPES = 8
 NEURO = CPG_LAG + 1
 NT_COUNT, NT_SEGMENTAL, NT_TAU, NT_BIAS, NT_CHANNEL, NT_SGAIN, NT_MGAIN, NT_DENSITY = range(8)
 CONN = NEURO + 8 * N_TYPES
-N_GENES = CONN + N_TYPES * N_TYPES
+# stage 7d: plasticity per neuron type at PLAST + 4·k + (modulatory, learning rate of synapses onto
+# it, habituation of its output synapses, recovery time) — stage7b-arch.md, "7d 구현 결정"
+PLAST = CONN + N_TYPES * N_TYPES
+PL_MOD, PL_ETA, PL_HAB, PL_REC = range(4)
+N_GENES = PLAST + 4 * N_TYPES
 # genes that describe the organism (not the brains): species distance, big mutations
 TRAIT_GENES = tuple(range(BRAIN)) + (ADHESION, ADAPT_TAU) + tuple(range(DIFF, NEURO))
 # species distance: the stage-7a traits. Body-plan genes act only once a lineage differentiates; in
@@ -78,7 +82,12 @@ GENE_RANGE = [
     (-4.0, 4.0),  # sense gain
     (-1.0, 1.0),  # motor gain: bend of its segment's joint per unit output (radians)
     (0.0, 24.0),  # synapses it tries to receive
-] * N_TYPES + [(-4.0, 4.0)] * (N_TYPES * N_TYPES)
+] * N_TYPES + [(-4.0, 4.0)] * (N_TYPES * N_TYPES) + [
+    (0.0, 1.0),  # ≥ 0.5: modulatory (its output is broadcast as the reward/punishment signal)
+    (-0.1, 0.1),  # learning rate of the synapses onto it (three-factor rule)
+    (0.0, 0.5),  # habituation: depression of its output synapses per unit activity
+    (1.0, 200.0),  # recovery time of those synapses (ticks)
+] * N_TYPES
 GENE_NAMES = ["div_size", "eta_h2", "eta_meth", "eta_anaer", "t_opt", "t_width", "mut_rate",
               "col_r", "col_g", "col_b", "eta_photo_an", "eta_photo_ox", "eta_aer", "eta_sfix",
               "eta_sox", "eta_mox", "o2_tol", "eta_pred", "speed", "prey_ratio"] + [
@@ -87,13 +96,15 @@ GENE_NAMES = ["div_size", "eta_h2", "eta_meth", "eta_anaer", "t_opt", "t_width",
                                          "germ_b", "cpg_amp", "cpg_freq", "cpg_lag"] + [
     f"n{k}_{p}" for k in range(N_TYPES)
     for p in ("count", "segmental", "tau", "bias", "channel", "sgain", "mgain", "density")] + [
-    f"w{k}_{l}" for k in range(N_TYPES) for l in range(N_TYPES)]
+    f"w{k}_{l}" for k in range(N_TYPES) for l in range(N_TYPES)] + [
+    f"n{k}_{p}" for k in range(N_TYPES) for p in ("modulatory", "eta", "habituation", "recovery")]
 
 # B-plan founder (§3): H2 chemosynthesis + methanogenesis only
 # zero brain: no movement, no predation, no division inhibition (stage-3a behaviour)
 FOUNDER = [0.02, 0.5, 0.3, 0.0, 30.0, 20.0, 0.02, 0.85, 0.35, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
            0.0, 0.0, 0.0, 2.0] + [0.0] * N_BRAIN + [0.0, 5.0] + [
     0.0, 4.0, 32.0] + [0.0] * 6 + [0.3, 0.05, 0.5] + [  # no differentiation: a single cell
-    0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 8.0] * N_TYPES + [0.0] * (N_TYPES * N_TYPES)  # no neurons
+    0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 8.0] * N_TYPES + [0.0] * (N_TYPES * N_TYPES) + [  # no neurons
+    0.0, 0.0, 0.0, 50.0] * N_TYPES  # no learning, no habituation
 
 assert len(GENE_RANGE) == len(GENE_NAMES) == len(FOUNDER) == N_GENES

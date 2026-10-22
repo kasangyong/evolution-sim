@@ -139,6 +139,10 @@ class LifeConfig:
     # stage 7c: nervous systems. 100 neurons ≈ 30% of the maintenance of a 0.1-body organism
     k_neuron: float = 1.0e-6  # energy per neuron per tick
     k_syn: float = 1.0e-7  # energy per unit Σ|synapse weight| per tick
+    # stage 7d: learning while alive
+    k_plastic: float = 2.0e-8  # energy per plastic synapse per tick (the learning machinery)
+    learn_decay: float = 1.0e-3  # learned changes fade at this rate per tick (forgetting)
+    dw_max: float = 4.0  # largest learned change of one synapse
 
 
 @dataclass

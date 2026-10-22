@@ -9,17 +9,20 @@ import numpy as np
 from evo.config import ChemConfig, ClimateConfig, Config, LifeConfig, WorldConfig
 from evo.world.ledger import Totals
 
-SCHEMA_VERSION = 6  # 2: stage 6 (adhesion gene); 3: 7a (12-input brain, senses); 4: 7b bodies;
+SCHEMA_VERSION = 7  # 2: stage 6 (adhesion gene); 3: 7a (12-input brain, senses); 4: 7b bodies;
 # 5: 7c neural genes; 6: organisms and their nervous systems stored, compacted (living organisms
-# and the pool neurons they use only), so a rewind keeps each circuit (and, in 7d, what it learned)
+# and the pool neurons they use only), so a rewind keeps each circuit; 7: 7d plasticity genes and
+# what each synapse has learned (dw) and its habituation (res)
 WORLD_FIELDS = ("chem", "atm", "clim", "acc")
 AGENT_FIELDS = ("state", "pos", "body", "energy", "age", "ncell", "uid", "parent", "genome", "free",
                 "act", "species", "adapt", "heading", "org", "seg", "metab_frac", "gen")
 # per-organism rows (schema 6 keeps the rows of living organisms only); free-lists are rebuilt
 ORG_FIELDS = ("state", "n", "slot", "suid", "head", "psi", "phase", "turn", "turn_sign", "uid",
-              "travel", "dirty", "nn", "nidx", "wsum", "bend", "bend_prev", "joint")
+              "travel", "dirty", "nn", "nidx", "wsum", "bend", "bend_prev", "joint", "wired_n",
+              "born", "last_wire", "nplastic", "mod_avg")
 OLD_ORG_FIELDS = ORG_FIELDS[:11]  # what schemas 4-5 stored (in full)
-NEURON_FIELDS = ("ntype", "nseg", "v", "rate", "nsyn", "pre", "w")
+NEURON_FIELDS = ("ntype", "nseg", "v", "rate", "nsyn", "pre", "w", "dw", "res")
+NEURON_FIELDS_6 = NEURON_FIELDS[:7]  # schema 6: no learning yet
 
 
 def capture(sim) -> dict:
@@ -37,6 +40,7 @@ def capture(sim) -> dict:
     out["neu.ids"] = used.astype(np.int32)
     out.update({f"neu.{k}": getattr(o, k).to_numpy()[used] for k in NEURON_FIELDS})
     out["org.next_uid"] = np.array(o.next_uid[None], np.int64)
+    out["org.clock"] = np.array(o.clock[None], np.int64)
     out["life.top"] = np.array(a.top[None], np.int64)
     out["life.next_uid"] = np.array(a.next_uid[None], np.int64)
     out["sim.tick"] = np.array(sim.tick, np.int64)
@@ -51,6 +55,23 @@ def upgrade(arrays: dict, sim) -> dict:
     cell and no organisms; schemas 4-5 keep their organisms, whose nerves regrow from the genes.
     Lets a recorded world run on with the new abilities possible."""
     version = int(arrays["schema_version"])
+    if version == 6:  # circuits kept; nothing learned yet, synapses fresh
+        from evo.life.genome import FOUNDER, N_GENES
+
+        out = dict(arrays)
+        g = arrays["life.genome"]
+        tail = np.broadcast_to(np.array(FOUNDER[g.shape[1]:], np.float32),
+                               (len(g), N_GENES - g.shape[1]))
+        out["life.genome"] = np.ascontiguousarray(np.concatenate([g, tail], axis=1))
+        shape = arrays["neu.w"].shape
+        out["neu.dw"] = np.zeros(shape, np.float32)
+        out["neu.res"] = np.ones(shape, np.float32)
+        out["org.wired_n"] = arrays["org.n"].astype(np.int32)  # circuits grown for these bodies
+        for k in ("born", "last_wire", "nplastic"):  # no learning genes before schema 7
+            out[f"org.{k}"] = np.zeros(len(arrays["org.ids"]), np.int32)
+        out["org.mod_avg"] = np.zeros(len(arrays["org.ids"]), np.float32)
+        out["schema_version"] = np.array(SCHEMA_VERSION, np.int64)
+        return out
     if version not in (3, 4, 5):
         return arrays
     from evo.life.genome import FOUNDER, N_GENES
@@ -105,6 +126,7 @@ def restore(sim, arrays: dict) -> None:
         (o.free if prefix == "org" else o.nfree).from_numpy(table)
         (o.top if prefix == "org" else o.ntop)[None] = len(free)
     o.next_uid[None] = int(arrays["org.next_uid"])
+    o.clock[None] = int(arrays["org.clock"]) if "org.clock" in arrays else 0
     a.top[None] = int(arrays["life.top"])
     a.next_uid[None] = int(arrays["life.next_uid"])
     a.want_div.fill(0)

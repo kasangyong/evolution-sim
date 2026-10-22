@@ -307,6 +307,7 @@ def life_summary(sim: Sim) -> dict:
 
 
 SWUM = 3.0  # an organism that has swum this many body lengths counts as a swimmer
+LEARNED = 0.1  # mean |learned change| of its synapses above which an organism has learned
 
 
 def organism_events(a) -> dict:
@@ -328,7 +329,11 @@ def organism_events(a) -> dict:
         places["neurons"] = tuple(map(float, t["head"][int(np.argmax(t["neurons"]))]))
     if central.any():
         places["central"] = tuple(map(float, t["head"][int(np.argmax(t["neurons"] * central))]))
+    learned = a.orgs.learned()  # same order as the table (living organisms by id)
+    if (learned > LEARNED).any():
+        places["learning"] = tuple(map(float, t["head"][int(np.argmax(learned))]))
     return {"orgs": len(t["id"]), "org_seg_max": int(t["n"].max()),
+            "org_learning": int((learned > LEARNED).sum()),
             "org_swimmers": int(swum.sum()), "org_neural": int(neural.sum()),
             "org_central": int(central.sum()), "places_org": places,
             "org_refused": int(a.orgs.failed_transitions[None])}
@@ -592,6 +597,7 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
                 "history": history_list, "branch": history.current, "temp_layer": TEMP_LAYER,
                 "notice": notice, "rec_dropped": history.dropped, "rec_errors": history.errors,
                 "rec_queue_peak": history.queue_peak, "rec_frame_spacing": history.frame_spacing,
+                "rec_disk_skipped": history.disk_skipped,
                 "rec_busy": history.busy / max(time.perf_counter() - history.started, 1e-9),
             }
             frame = png(rgb)

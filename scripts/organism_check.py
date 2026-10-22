@@ -86,8 +86,12 @@ while sim.tick < ticks:
     sim.step(every)
     t = o.table()
     n, travel, gen = t["n"], t["travel"], t["gen"]
+    since = t["since_wire"]
+    learned = o.learned()
     print(f"tick {sim.tick:>7} organisms {len(n):>5} longest {n.max() if len(n) else 0:>2} "
           f"mean seg {n.mean() if len(n) else 0:4.1f} generation max {gen.max() if len(gen) else 0:>3} "
           f"max swum {travel.max() if len(travel) else 0:6.1f} cells {a.cells():.3g} "
+          f"life since full rewire {since.mean() if len(since) else 0:.2f} learned>0.1 "
+          f"{int((learned > 0.1).sum())} "
           f"refused {o.failed_transitions[None]} neurons {o.ncap - o.ntop[None]} (refused "
           f"{o.failed_neurons[None]}) err {sim.budget_error().worst():.1e}", flush=True)

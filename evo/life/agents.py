@@ -630,6 +630,7 @@ class Agents:
             self.genome[j, g] = self.gene_lo[g] + ti.random() * (self.gene_hi[g] - self.gene_lo[g])
 
     def step(self):
+        self.orgs.clock[None] += 1
         self.move()
         self.orgs.neural()
         self.orgs.swim()
