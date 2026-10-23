@@ -26,7 +26,7 @@ def main():
                     help="serve a live browser viewer on PORT instead of the desktop window")
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to allow other devices on the LAN")
     ap.add_argument("--history", default="", help="time-machine folder (default runs/history/<time>-seed<N>)")
-    ap.add_argument("--budget-gb", type=float, default=20.0, help="disk budget for the time machine")
+    ap.add_argument("--budget-gb", type=float, default=10.0, help="disk budget for the time machine")
     ap.add_argument("--resume", default="", metavar="SNAPSHOT",
                     help="continue from a time-machine snapshot (runs/history/<run>/b<id>/snaps/<tick>.npz)")
     args = ap.parse_args()

@@ -84,7 +84,7 @@ uv run python -m evo.main --web 8765 --seed 3
 ![사건 기록이 찍은 광합성 번성 순간의 바다 전체](docs/images/event-bloom.png)
 
 - 시계는 생물 시간(tick)과 지질 환산(1 tick = 1,000년, 실제 지구 시간 아님)을 함께 보인다.
-- 기록은 `runs/history/<시각>-seed<N>/`에 쌓인다. 100 tick마다 화면·세포 기록, 1만 tick마다 전체 저장점. 기본 예산 20 GB(`--budget-gb`)를 넘으면 오래된 과거부터 성기게 줄인다.
+- 기록은 `runs/history/<시각>-seed<N>/`에 쌓인다. 100 tick마다 화면·세포 기록, 1만 tick마다 전체 저장점. 기본 예산 10 GB(`--budget-gb`)를 넘으면 오래된 과거부터 성기게 줄인다. 드라이브 여유가 5 GB 아래면 기록을 멈추고 화면에 알린다.
 - 저장점에서 이어 보기: `uv run python -m evo.main --web 8765 --resume runs/history/<실행>/b0/snaps/<tick>.npz`
 - 다른 실행 방법:
   - 데스크톱 창 뷰어: `uv run python -m evo.main`
