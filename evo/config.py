@@ -129,11 +129,13 @@ class LifeConfig:
     org_capacity: int = 65536  # organism records; each segment is one slot of the pool above
     neuron_capacity: int = 262144  # neurons shared by all organisms (~55 MB with synapses)
     org_min_cells: float = 16.0  # a differentiating colony this big becomes an organism
-    seg_len: float = 0.5  # segment length (grid cells)
+    seg_len: float = 0.5  # segment length (grid cells); 1.0 did not help new organisms (organism-fate.md)
     drag_t: float = 1.0  # resistive force per unit velocity along a segment
     drag_n: float = 2.0  # ... and across it (slender body: about twice the tangential)
     k_cilia: float = 0.02  # ciliary thrust per segment at full cilia share
-    k_work: float = 0.01  # energy per unit body per unit dissipated swimming power
+    # energy per unit body per unit dissipated swimming power. k_work × drag_t = k_move keeps a
+    # body's flagellar swimming as costly as the same cells swimming as a colony (organism-fate)
+    k_work: float = 0.01
     turn_ticks: int = 10  # a turn bends the body to one side this long
     turn_bend: float = 0.4  # extra bend per muscle joint during a turn (radians)
     # stage 7c: nervous systems. 100 neurons ≈ 30% of the maintenance of a 0.1-body organism

@@ -30,7 +30,15 @@ import numpy as np
 import taichi as ti
 
 from evo.config import H, O, R
-from evo.life.agents import ACT_ON, ACT_TUMBLE, ADAPT_UNSET, ALIVE, COLONY_ADHESION, N_OUT
+from evo.life.agents import (
+    ACT_ON,
+    ACT_SPEED,
+    ACT_TUMBLE,
+    ADAPT_UNSET,
+    ALIVE,
+    COLONY_ADHESION,
+    N_OUT,
+)
 from evo.life.genome import (
     ADHESION,
     CONN,
@@ -56,6 +64,7 @@ from evo.life.genome import (
     PL_REC,
     PLAST,
     SEG_CELLS,
+    SPEED,
     TISSUE,
 )
 from evo.world.fields import CHEM_DTYPE
@@ -267,7 +276,12 @@ class Organisms:
                         D = ct * t.outer_product(t) + cn * nn.outer_product(nn)
                         p = ti.math.vec2(-(ry[k] + py[k]), rx[k] + px[k]) * 0.5
                         u = ti.math.vec2(rx[k] - px[k], ry[k] - py[k])
-                        f = self.cfg.k_cilia * self.shares(self.slot[o, k], k)[T_CILIA] * t
+                        # cilia tissue, plus the cells' own flagella: they keep swimming as they did
+                        # in the colony (top speed gene × the head's speed output), now along the
+                        # body; alone a segment would go at that speed (force = c_t × speed)
+                        sk = self.slot[o, k]
+                        flag = self.a.genome[sk, SPEED] * ti.max(self.a.act[h][ACT_SPEED], 0.0)
+                        f = (self.cfg.k_cilia * self.shares(sk, k)[T_CILIA] + ct * flag) * t
                         Dp = D @ p
                         g = f - D @ u
                         A[0, 0] += D[0, 0]
@@ -391,27 +405,32 @@ class Organisms:
                         elif k == n - 1 and n < self.target(i):
                             j = self.pop_slot(i)
                             if j >= 0:
-                                # the tail buds a new segment: half its cells, the same genome
-                                half = 0.5 * self.a.body[i]
-                                self.a.body[j] = half
-                                self.a.body[i] -= half
-                                e_half = 0.5 * self.a.energy[i]
-                                self.a.energy[j] = e_half
-                                self.a.energy[i] -= e_half
-                                n_half = ti.max(0.5 * self.a.ncell[i], 1.0)
-                                self.a.ncell[i] = n_half
-                                self.a.ncell[j] = n_half
-                                self.start_slot(i, j)
-                                for g in range(N_GENES):
-                                    self.a.genome[j, g] = self.a.genome[i, g]
-                                self.a.org[j] = o
-                                self.a.seg[j] = n
-                                self.a.metab_frac[j] = self.shares(i, n)[T_METAB]
-                                self.slot[o, n] = j
-                                self.suid[o, n] = self.a.uid[j]
-                                self.n[o] = n + 1
-                                self.dirty[o] |= REWIRE_GROW  # its neurons are added
-                                self.a.state[j] = ALIVE
+                                self.bud(o, i, j, n)
+
+    @ti.func
+    def bud(self, o: int, i: int, j: int, n: int):
+        """The tail slot i gives half its cells, body and energy to slot j, the new segment n
+        (same genome)."""
+        half = 0.5 * self.a.body[i]
+        self.a.body[j] = half
+        self.a.body[i] -= half
+        e_half = 0.5 * self.a.energy[i]
+        self.a.energy[j] = e_half
+        self.a.energy[i] -= e_half
+        n_half = ti.max(0.5 * self.a.ncell[i], 1.0)
+        self.a.ncell[i] = n_half
+        self.a.ncell[j] = n_half
+        self.start_slot(i, j)
+        for g in range(N_GENES):
+            self.a.genome[j, g] = self.a.genome[i, g]
+        self.a.org[j] = o
+        self.a.seg[j] = n
+        self.a.metab_frac[j] = self.shares(i, n)[T_METAB]
+        self.slot[o, n] = j
+        self.suid[o, n] = self.a.uid[j]
+        self.n[o] = n + 1
+        self.dirty[o] |= REWIRE_GROW  # its neurons are added
+        self.a.state[j] = ALIVE
 
     @ti.kernel
     def integrity(self):

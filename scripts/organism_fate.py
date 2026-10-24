@@ -8,6 +8,7 @@ Organisms rarely arise on their own, so `plan=chemo|neural` gives the 40 best ch
 body plan at tick 5,000 (as organism_check.py does; checking only, never part of an observed run).
 
     PYTHONPATH=. uv run python scripts/organism_fate.py <seed> [ticks] [every] [plan=none|chemo|neural]
+        [sect.key=val ...]
 """
 import sys
 
@@ -42,6 +43,10 @@ from evo.sim import Sim
 
 cfg = Config()
 cfg.world.seed = seed
+for path, val in opts.items():
+    if "." in path:  # config override, e.g. life.seg_len=0.5
+        sect, key = path.split(".", 1)
+        setattr(getattr(cfg, sect), key, type(getattr(getattr(cfg, sect), key))(val))
 sim = Sim(cfg)
 a, o = sim.life, sim.life.orgs
 

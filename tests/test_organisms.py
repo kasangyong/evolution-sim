@@ -249,3 +249,35 @@ def test_travel_counts_swimming_not_drifting(small_cfg):
         o.swim()
     assert np.linalg.norm(o.head.to_numpy()[oid] - start) > 0.1  # carried by the current
     assert o.travel[oid] < 1e-3  # but it did not swim
+
+
+def test_cells_keep_their_flagella_in_a_body(small_cfg):
+    # a colony swims with its cells' flagella (speed gene × brain speed output); becoming an
+    # organism must not take that away: a one-segment body glides at about that speed
+    from evo.life.agents import ACT_SPEED
+    from evo.life.genome import SPEED
+
+    sim = empty_world(small_cfg)
+    sim.world.psi.fill(0.0)
+    oid, (head,) = make_org(sim, genes({SPEED: 0.2, CILIA: -8.0, CPG_AMP: 0.0}), 1,
+                            head=(70.5, 20.5), energy=10.0)
+    a, o = sim.life, sim.life.orgs
+    act = a.act.to_numpy()
+    act[head, ACT_SPEED] = 1.0
+    a.act.from_numpy(act)
+    for _ in range(50):
+        o.swim()
+    assert o.travel[oid] == pytest.approx(50 * 0.2, rel=0.05)
+    act[head, ACT_SPEED] = 0.0  # the brain says rest: no flagellar push
+    a.act.from_numpy(act)
+    t0 = o.travel[oid]
+    for _ in range(50):
+        o.swim()
+    assert o.travel[oid] - t0 < 1e-3
+
+
+def test_flagellar_swimming_costs_the_same_in_a_body_as_in_a_colony(small_cfg):
+    # straight body of n segments pushed at speed s: dissipated power n·c_t·s², charged
+    # k_work × power × mean segment body = k_work·c_t·s²·B, the colony pays k_move·s²·B
+    life = small_cfg.life
+    assert life.k_work * life.drag_t == pytest.approx(life.k_move)
