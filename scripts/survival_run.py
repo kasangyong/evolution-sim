@@ -27,8 +27,10 @@ t, worst, min_pop, first_photo = time.perf_counter(), 0.0, None, None
 first_org, max_orgs, max_seg, max_swum = None, 0, 0, 0.0  # stage 7b
 max_neurons, neural_orgs = 0, 0  # stage 7c
 max_learned, learning_orgs = 0.0, 0  # stage 7d
+org_log = []  # organisms that ended: birth conditions and fate (Organisms.LOG_FIELDS)
 while sim.tick < ticks and sim.life.count() > 0:
     sim.step(1000)
+    org_log.append(sim.life.orgs.drain_log())
     pop = sim.life.count()
     if min_pop is None or pop < min_pop:  # the bottleneck, with its cells (super-individuals)
         min_pop, min_cells = pop, sim.life.cells()
@@ -52,7 +54,7 @@ snap = sim.life.snapshot()
 if "save" in opts:
     alive = sim.life.state.to_numpy() == ALIVE
     np.savez_compressed(opts["save"], genome=sim.life.genome.to_numpy()[alive],
-                        ncell=sim.life.ncell.to_numpy()[alive])
+                        ncell=sim.life.ncell.to_numpy()[alive], org_log=np.concatenate(org_log))
 means = snap["genome"].mean(axis=0) if len(snap["body"]) else np.full(len(GENE_NAMES), np.nan)
 genes = " ".join(f"{g}={m:.3g}" for g, m in zip(GENE_NAMES[:6], means[:6]))
 status = "ALIVE" if sim.life.count() > 0 else f"EXTINCT@{sim.tick}"

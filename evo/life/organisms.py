@@ -46,6 +46,10 @@ from evo.life.genome import (
     CPG_FREQ,
     CPG_LAG,
     DIFF,
+    ETA_H2,
+    ETA_PHOTO_AN,
+    ETA_PHOTO_OX,
+    ETA_PRED,
     N_GENES,
     N_SEG,
     N_TYPES,
@@ -83,6 +87,11 @@ REWIRE_ALL, REWIRE_GROW, REWIRE_CUT = 1, 2, 4
 N_CHANNELS = 7  # senses: 4 chemical/light changes, hunger, touch, bend ahead (proprioception)
 NEURAL_SUBSTEPS = 2
 LIFE_BINS = 24  # lifespan histogram, log2 bins up to 2^24 ticks
+# one row per organism that ended (drained by the caller): what it was born into and how it went
+LOG_FIELDS = ("born", "lived", "cause", "x", "y", "depth_above_floor", "h2", "light",
+              "cells_here", "cells_around", "kind", "max_segments", "neurons")
+LOG_CAP = 1 << 16
+KIND_CHEMO, KIND_PHOTO_AN, KIND_PHOTO_OX, KIND_PRED = range(4)
 # the modulator signal is phasic: modulatory output minus its recent mean (this many ticks), as
 # dopamine neurons burst on what is unexpected rather than signal a level (Schultz 1997); a tonic
 # level would drive every co-active synapse to its bound
@@ -150,6 +159,12 @@ class Organisms:
         self.ends = ti.field(ti.i64, shape=4)  # index = CAUSE_* (0: unknown)
         self.cuts = ti.field(ti.i64, shape=4)
         self.lifespan = ti.field(ti.i64, shape=LIFE_BINS)  # bin = floor(log2(ticks lived + 1))
+        # conditions at birth, kept per organism, written to the log when it ends
+        self.birth = ti.field(ti.f32, shape=(cap, 8))  # x, y, depth, h2, light, here, around, kind
+        self.max_n = ti.field(ti.i32, shape=cap)
+        self.log = ti.field(ti.f32, shape=(LOG_CAP, len(LOG_FIELDS)))
+        self.log_n = ti.field(ti.i32, shape=())
+        self.log_dropped = ti.field(ti.i64, shape=())
         self.bend = ti.field(ti.f32, shape=(cap, MAX_SEG))  # neural bend of each joint, now
         self.bend_prev = ti.field(ti.f32, shape=(cap, MAX_SEG))
         self.joint = ti.field(ti.f32, shape=(cap, MAX_SEG))  # joint angles (proprioception)
@@ -429,6 +444,7 @@ class Organisms:
         self.slot[o, n] = j
         self.suid[o, n] = self.a.uid[j]
         self.n[o] = n + 1
+        self.max_n[o] = ti.max(self.max_n[o], n + 1)
         self.dirty[o] |= REWIRE_GROW  # its neurons are added
         self.a.state[j] = ALIVE
 
@@ -449,6 +465,17 @@ class Organisms:
                     if cut == 0:  # the head died: the organism ends
                         ti.atomic_add(self.ends[c], 1)
                         age = ti.max(self.clock[None] - self.born[o], 0)
+                        r = ti.atomic_add(self.log_n[None], 1)
+                        if r < LOG_CAP:
+                            self.log[r, 0] = ti.cast(self.born[o], ti.f32)
+                            self.log[r, 1] = ti.cast(age, ti.f32)
+                            self.log[r, 2] = ti.cast(c, ti.f32)
+                            for q in ti.static(range(8)):
+                                self.log[r, 3 + q] = self.birth[o, q]
+                            self.log[r, 11] = ti.cast(self.max_n[o], ti.f32)
+                            self.log[r, 12] = ti.cast(self.nn[o], ti.f32)
+                        else:
+                            ti.atomic_add(self.log_dropped[None], 1)
                         b = ti.min(ti.cast(ti.floor(ti.log(ti.cast(age + 1, ti.f32)) / ti.log(2.0)),
                                            ti.i32), LIFE_BINS - 1)
                         ti.atomic_add(self.lifespan[b], 1)
@@ -505,6 +532,32 @@ class Organisms:
                     self.dirty[o] = REWIRE_ALL
                     self.born[o] = self.clock[None]
                     self.mod_avg[o] = 0.0
+                    self.max_n[o] = 1
+                    # what it is born into: place, food, crowding (census of this tick), metabolism
+                    p = ti.cast(self.a.pos[i], ti.i32)
+                    here = self.a.cell_cells[p.x, p.y] - self.a.ncell[i]
+                    around = 0.0
+                    for dx, dy in ti.static(ti.ndrange((-1, 2), (-1, 2))):
+                        q = ti.math.ivec2(p.x + dx, p.y + dy)
+                        if self.a.world.is_water(q.x, q.y):
+                            around += self.a.cell_cells[q.x, q.y]
+                    around -= self.a.cell_cells[p.x, p.y]
+                    kind = KIND_CHEMO
+                    best = self.a.genome[i, ETA_H2]
+                    if self.a.genome[i, ETA_PHOTO_AN] > best:
+                        kind, best = KIND_PHOTO_AN, self.a.genome[i, ETA_PHOTO_AN]
+                    if self.a.genome[i, ETA_PHOTO_OX] > best:
+                        kind, best = KIND_PHOTO_OX, self.a.genome[i, ETA_PHOTO_OX]
+                    if self.a.genome[i, ETA_PRED] > best:
+                        kind = KIND_PRED
+                    self.birth[o, 0] = self.a.pos[i].x
+                    self.birth[o, 1] = self.a.pos[i].y
+                    self.birth[o, 2] = ti.cast(self.a.world.floor[p.x] - 1 - p.y, ti.f32)
+                    self.birth[o, 3] = ti.cast(self.a.world.chem[H, p.x, p.y], ti.f32)
+                    self.birth[o, 4] = self.a.world.light[p.x, p.y]
+                    self.birth[o, 5] = here
+                    self.birth[o, 6] = around
+                    self.birth[o, 7] = ti.cast(kind, ti.f32)
                     for k in ti.static(range(MAX_SEG)):
                         self.bend[o, k] = 0.0
                         self.bend_prev[o, k] = 0.0
@@ -770,6 +823,13 @@ class Organisms:
                 mask = np.arange(dw.shape[1])[None, :] < ns[g][:, None]
                 out[r] = float(np.abs(dw[g])[mask].mean()) if mask.any() else 0.0
         return out
+
+    def drain_log(self) -> np.ndarray:
+        """Rows of organisms that ended since the last drain (LOG_FIELDS columns)."""
+        n = min(int(self.log_n[None]), LOG_CAP)
+        rows = self.log.to_numpy()[:n].copy()
+        self.log_n[None] = 0
+        return rows
 
     def death_report(self) -> dict:
         """Organism ends and body cuts by cause, and the lifespan histogram (log2 bins)."""

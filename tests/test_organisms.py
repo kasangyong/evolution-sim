@@ -281,3 +281,26 @@ def test_flagellar_swimming_costs_the_same_in_a_body_as_in_a_colony(small_cfg):
     # k_work × power × mean segment body = k_work·c_t·s²·B, the colony pays k_move·s²·B
     life = small_cfg.life
     assert life.k_work * life.drag_t == pytest.approx(life.k_move)
+
+
+def test_an_ended_organism_leaves_a_record_of_its_birth_and_fate(small_cfg):
+    from evo.life.organisms import KIND_CHEMO, LOG_FIELDS
+
+    sim = empty_world(small_cfg)
+    a, o = sim.life, sim.life.orgs
+    i = add_slot(a, genes(), (30.5, 20.5), ncell=32.0)
+    a.census()
+    o.transition()
+    oid = int(a.org[i])
+    for _ in range(7):
+        o.clock[None] += 1
+    a.state[i] = 2  # the head is eaten
+    a.cause[i] = 1
+    a.die()
+    o.integrity()
+    rows = o.drain_log()
+    assert len(rows) == 1 and o.log_n[None] == 0
+    r = dict(zip(LOG_FIELDS, rows[0]))
+    assert r["lived"] == 7 and r["cause"] == 1 and r["kind"] == KIND_CHEMO
+    assert (r["x"], r["y"]) == (30.5, 20.5) and r["max_segments"] == 1
+    assert oid >= 0
