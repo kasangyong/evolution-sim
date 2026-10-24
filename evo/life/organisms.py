@@ -73,6 +73,7 @@ MAX_NEU, MAX_SYN = 256, 24  # per organism: neurons, synapses received per neuro
 REWIRE_ALL, REWIRE_GROW, REWIRE_CUT = 1, 2, 4
 N_CHANNELS = 7  # senses: 4 chemical/light changes, hunger, touch, bend ahead (proprioception)
 NEURAL_SUBSTEPS = 2
+LIFE_BINS = 24  # lifespan histogram, log2 bins up to 2^24 ticks
 # the modulator signal is phasic: modulatory output minus its recent mean (this many ticks), as
 # dopamine neurons burst on what is unexpected rather than signal a level (Schultz 1997); a tonic
 # level would drive every co-active synapse to its bound
@@ -135,6 +136,11 @@ class Organisms:
         # saturation, so a full table is visible rather than silent (stage 7c evaluation)
         self.failed_transitions = ti.field(ti.i64, shape=())  # colonies refused: table full
         self.failed_neurons = ti.field(ti.i64, shape=())  # neurons not grown: pool full
+        # why organisms end (by the cause of the head's death) and how long they lived, and why
+        # bodies were cut (cause of the segment death at the cut); measurement, stage 7d review
+        self.ends = ti.field(ti.i64, shape=4)  # index = CAUSE_* (0: unknown)
+        self.cuts = ti.field(ti.i64, shape=4)
+        self.lifespan = ti.field(ti.i64, shape=LIFE_BINS)  # bin = floor(log2(ticks lived + 1))
         self.bend = ti.field(ti.f32, shape=(cap, MAX_SEG))  # neural bend of each joint, now
         self.bend_prev = ti.field(ti.f32, shape=(cap, MAX_SEG))
         self.joint = ti.field(ti.f32, shape=(cap, MAX_SEG))  # joint angles (proprioception)
@@ -420,6 +426,15 @@ class Organisms:
                         cut = ti.min(cut, k)
                 if cut < n:
                     self.dirty[o] |= REWIRE_CUT
+                    c = ti.min(ti.max(self.a.cause[self.slot[o, cut]], 0), 3)
+                    if cut == 0:  # the head died: the organism ends
+                        ti.atomic_add(self.ends[c], 1)
+                        age = ti.max(self.clock[None] - self.born[o], 0)
+                        b = ti.min(ti.cast(ti.floor(ti.log(ti.cast(age + 1, ti.f32)) / ti.log(2.0)),
+                                           ti.i32), LIFE_BINS - 1)
+                        ti.atomic_add(self.lifespan[b], 1)
+                    else:
+                        ti.atomic_add(self.cuts[c], 1)
                 flags = self.dirty[o]
                 if cut == 0 or (flags & REWIRE_ALL) != 0 or (
                         (flags & REWIRE_GROW) != 0 and (flags & REWIRE_CUT) != 0):
@@ -736,6 +751,14 @@ class Organisms:
                 mask = np.arange(dw.shape[1])[None, :] < ns[g][:, None]
                 out[r] = float(np.abs(dw[g])[mask].mean()) if mask.any() else 0.0
         return out
+
+    def death_report(self) -> dict:
+        """Organism ends and body cuts by cause, and the lifespan histogram (log2 bins)."""
+        names = ("unknown", "eaten", "starved", "background")
+        ends, cuts = self.ends.to_numpy(), self.cuts.to_numpy()
+        return {"ends": {names[k]: int(ends[k]) for k in range(4)},
+                "cuts": {names[k]: int(cuts[k]) for k in range(4)},
+                "lifespan_log2": self.lifespan.to_numpy().tolist()}
 
     def neurons_of(self, o: int) -> np.ndarray:
         """Pool ids of organism o's neurons (tests, viewer)."""

@@ -36,6 +36,9 @@ from evo.world.fields import CHEM_DTYPE, World
 from evo.world.reactions import REACTIONS, delta_g
 
 DEAD, ALIVE, DYING = 0, 1, 2
+# why a slot died (kept until the slot dies again): for measuring why organisms do not last
+CAUSE_EATEN, CAUSE_STARVED, CAUSE_RANDOM = 1, 2, 3
+CAUSE_NAMES = {CAUSE_EATEN: "eaten", CAUSE_STARVED: "starved", CAUSE_RANDOM: "background"}
 COLONY_ADHESION = 0.5  # stage 6: adhesion at which a multi-cell slot counts as a colony
 # brain outputs
 # stage 7a: run-and-tumble like real bacteria; the brain cannot pick a direction, only when to
@@ -125,6 +128,7 @@ class Agents:
         self.seg = ti.field(ti.i32, shape=cap)
         self.metab_frac = ti.field(ti.f32, shape=cap)
         self.gen = ti.field(ti.i32, shape=cap)  # organism generations: +1 per released germ cell
+        self.cause = ti.field(ti.i32, shape=cap)  # CAUSE_* of the last death in this slot
         self.trait_idx = ti.field(ti.i32, shape=len(TRAIT_GENES))
         self.trait_idx.from_numpy(np.array(TRAIT_GENES, np.int32))
         self.adapt.fill(ADAPT_UNSET)
@@ -342,6 +346,7 @@ class Agents:
                             ti.atomic_add(self.body[j], want - got)
                         if old - got <= self.cfg.min_body:
                             self.state[j] = DYING  # eaten: die() turns what is left into detritus
+                            self.cause[j] = CAUSE_EATEN
                         if got > 0:
                             # prey super-individual loses cells in proportion (count, not ledger)
                             self.ncell[j] = ti.max(self.ncell[j] * ti.cast(1.0 - got / old, ti.f32),
@@ -517,6 +522,8 @@ class Agents:
                 self.body[i] = b
                 self.energy[i] = ti.cast(e, ti.f32)
                 dead = e < 0 or b <= self.cfg.min_body
+                if dead:
+                    self.cause[i] = CAUSE_STARVED
                 if nc > 1.0 and not dead:
                     # super-individual: background mortality removes that fraction of its cells
                     loss = self.cfg.death_rate * b
@@ -526,6 +533,7 @@ class Agents:
                     self.ncell[i] = ti.max(self.ncell[i] * (1.0 - self.cfg.death_rate), 1.0)
                 elif ti.random() < self.cfg.death_rate:
                     dead = True
+                    self.cause[i] = CAUSE_RANDOM
                 if dead:
                     self.state[i] = DYING
                 elif (b >= self.genome[i, DIV_SIZE] * nc and self.act[i][ACT_HOLD] <= ACT_ON
