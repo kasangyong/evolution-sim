@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 import taichi as ti
 
@@ -221,17 +223,29 @@ class Renderer:
         return self.cells.to_numpy()[:n], self.n_in[None]
 
 
-def closeup(background: np.ndarray, rows: np.ndarray, x0: float, y0: float, scale: int) -> np.ndarray:
+def closeup(background: np.ndarray, rows: np.ndarray, x0: float, y0: float, scale: int,
+            organisms: bool = False, focus: tuple | None = None) -> np.ndarray:
     """Event close-up (numpy, any thread): the natural-colour crop scaled by `scale`, with every
     cell drawn as a disc in its pigment colour, sized by cell body like the browser zoom view,
-    with a darker rim; colonies get a light ring."""
+    with a darker rim; colonies get a light ring. With `organisms`, the other cells are faded and
+    each multicellular organism is drawn as its segments joined head to tail, outlined, so one
+    body stands out among thousands of cells (stage 7b-7d events); the one whose head is nearest
+    `focus` (the event's organism) in bright orange, the others thinly."""
     img = background.repeat(scale, axis=0).repeat(scale, axis=1).astype(np.float32)
     img *= 0.7  # dim the water so the cells read
     h, w, _ = img.shape
     f = {name: k for k, name in enumerate(CELL_FIELDS)}
+    if organisms:
+        bodies = {}
+        for r in rows:
+            if r[f["org"]] > 0:
+                bodies.setdefault(int(r[f["org"]]), []).append(r)
+        rows = [r for r in rows if r[f["org"]] <= 0]  # the rest first, faded, then the bodies
     for r in rows:
         cx, cy = (r[f["x"]] - x0) * scale, (r[f["y"]] - y0) * scale
         rad = max(scale * 0.42 * np.cbrt(max(r[f["size"]], 1e-6) / 0.02), 1.5)
+        if organisms:
+            rad *= 0.6  # background cells: smaller and faded
         xa, xb = int(max(cx - rad - 2, 0)), int(min(cx + rad + 3, w))
         ya, yb = int(max(cy - rad - 2, 0)), int(min(cy + rad + 3, h))
         if xa >= xb or ya >= yb:
@@ -239,8 +253,35 @@ def closeup(background: np.ndarray, rows: np.ndarray, x0: float, y0: float, scal
         yy, xx = np.mgrid[ya:yb, xa:xb]
         d = np.hypot(xx + 0.5 - cx, yy + 0.5 - cy)
         col = np.array([r[f["r"]], r[f["g"]], r[f["b"]]]) * 255
+        if organisms:
+            col = 0.2 * col + 0.8 * img[int(min(max(cy, 0), h - 1)), int(min(max(cx, 0), w - 1))]
         img[ya:yb, xa:xb][d <= rad] = col
         img[ya:yb, xa:xb][(d > rad - 1.2) & (d <= rad)] = col * 0.55
-        if r[f["colony"]] > 0:
+        if r[f["colony"]] > 0 and not organisms:
             img[ya:yb, xa:xb][(d > rad + 0.8) & (d <= rad + 1.8)] = (235, 240, 245)
+    if organisms:
+        yy, xx = np.mgrid[0:h, 0:w]
+        target = None
+        if focus is not None and bodies:
+            def head_dist(item):
+                head = min(item[1], key=lambda r: r[f["seg"]])
+                return np.hypot(head[f["x"]] - focus[0], head[f["y"]] - focus[1])
+            target = min(bodies.items(), key=head_dist)[0]
+        for oid in sorted(bodies, key=lambda o: o == target):  # the event's organism on top
+            segs = sorted(bodies[oid], key=lambda r: r[f["seg"]])
+            main = oid == target or target is None
+            link = (255, 170, 60) if main else (200, 190, 160)
+            pts = [((r[f["x"]] - x0) * scale, (r[f["y"]] - y0) * scale) for r in segs]
+            body_w = max(scale * (0.3 if main else 0.15), 3.0 if main else 1.5)
+            for (ax, ay), (bx, by) in itertools.pairwise(pts):  # the body: segments joined
+                for t in np.linspace(0.0, 1.0, int(np.hypot(bx - ax, by - ay) / 2) + 2):
+                    px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+                    near = np.hypot(xx + 0.5 - px, yy + 0.5 - py) <= body_w
+                    img[near] = link
+            for k, (r, (px, py)) in enumerate(zip(segs, pts)):
+                rad = max(scale * (0.42 if main else 0.3), 4.0 if main else 2.5)
+                d = np.hypot(xx + 0.5 - px, yy + 0.5 - py)
+                img[d <= rad] = np.array([r[f["r"]], r[f["g"]], r[f["b"]]]) * 255
+                ring = (255, 255, 255) if k == 0 else link  # the head: white
+                img[(d > rad) & (d <= rad + (2.5 if main else 1.0))] = ring
     return np.clip(img, 0, 255).astype(np.uint8)

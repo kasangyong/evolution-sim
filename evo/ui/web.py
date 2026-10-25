@@ -307,6 +307,7 @@ def life_summary(sim: Sim) -> dict:
 
 
 SWUM = 3.0  # an organism that has swum this many body lengths counts as a swimmer
+ORGANISM_EVENTS = {"organism", "body", "org_swim", "neurons", "central", "learning"}
 LEARNED = 0.1  # mean |learned change| of its synapses above which an organism has learned
 
 
@@ -403,9 +404,13 @@ def serve(sim: Sim, gpu_name: str, host: str, port: int, history_root: Path, bud
         zoom = None
         if ev.where is not None:
             cx, cy = int(ev.where[0]), int(ev.where[1])
-            x0, y0 = max(min(cx - 48, w.w - 96), 0), max(min(cy - 18, w.d - 36), 0)
-            rows, _ = recorder.viewport_cells(x0, y0, x0 + 96, y0 + 36)
-            crop = closeup(np.ascontiguousarray(rgb[y0:y0 + 36, x0:x0 + 96]), rows, x0, y0, 8)
+            body = ev.kind in ORGANISM_EVENTS  # one body among thousands: closer, and outlined
+            cw, ch, scale = (24, 9, 32) if body else (96, 36, 8)  # same 768 × 288 picture
+            x0 = max(min(cx - cw // 2, w.w - cw), 0)
+            y0 = max(min(cy - ch // 2, w.d - ch), 0)
+            rows, _ = recorder.viewport_cells(x0, y0, x0 + cw, y0 + ch)
+            crop = closeup(np.ascontiguousarray(rgb[y0:y0 + ch, x0:x0 + cw]), rows, x0, y0, scale,
+                           organisms=body, focus=ev.where)
             zoom = f"{stem}_zoom.png"
             (history.root / "events" / zoom).write_bytes(png(crop))
         entry = {"tick": ev.tick, "kind": ev.kind, "title": ev.title, "detail": ev.detail,

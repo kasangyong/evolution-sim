@@ -104,3 +104,24 @@ def test_event_closeup_draws_each_cell_in_its_pigment():
     assert tuple(img[18 * 8 + 4, 10 * 8 + 4]) == (51, 153, 76)  # centre of the first cell
     assert tuple(img[18 * 8 + 4, 50 * 8 + 4]) == (153, 76, 102)
     assert img[2, 2].sum() == 0  # water stays dark
+
+
+def test_an_organism_closeup_outlines_the_body():
+    import numpy as np
+
+    from evo.ui.render import CELL_FIELDS, closeup
+
+    f = {n: k for k, n in enumerate(CELL_FIELDS)}
+    rows = np.zeros((4, len(CELL_FIELDS)), np.float32)
+    for k, (x, org, seg) in enumerate([(5.5, 1, 0), (6.5, 1, 1), (7.5, 1, 2), (2.5, 0, 0)]):
+        rows[k, f["x"]], rows[k, f["y"]], rows[k, f["size"]] = x, 4.5, 0.02
+        rows[k, f["org"]], rows[k, f["seg"]] = org, seg
+        rows[k, f["g"]] = 0.8
+    bg = np.full((9, 24, 3), 40, np.uint8)
+    img = closeup(bg, rows, 0.0, 0.0, 32, organisms=True)
+    head = img[int(4.5 * 32), int(5.5 * 32) - int(32 * 0.42) - 1]  # on the head's white ring
+    assert (head == 255).all()
+    between = img[int(4.5 * 32), int(6.0 * 32)]  # the link between segments 0 and 1
+    assert tuple(between) == (255, 170, 60)  # the body, in the highlight colour
+    lone = img[int(4.5 * 32), int(2.5 * 32)]  # a single cell: faded toward the water
+    assert lone[1] < 0.8 * 255 * 0.6
